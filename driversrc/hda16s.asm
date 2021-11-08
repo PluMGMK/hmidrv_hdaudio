@@ -2205,6 +2205,12 @@ irq_handler	proc
 	mov	ds,cs:[lpPortList_seg]
 	assume	ds:_TEXT
 	call	get_hdareg_ptr
+	movzx	eax,es:[edi].HDAREGS.statests	; don't care about this...
+	test	eax,eax
+	jz	@F
+	mov	es:[edi].HDAREGS.statests,ax	; write 1s back to clear the bits
+
+@@:
 	mov	ebx,es:[edi].HDAREGS.intsts
 	bt	ebx,31		; GIS
 	jnc	@@not_ours
@@ -2215,12 +2221,6 @@ irq_handler	proc
 	bt	ebx,30		; CIS
 	jnc	@@not_rirb
 
-	movzx	eax,es:[edi].HDAREGS.statests	; don't care about this...
-	test	eax,eax
-	jz	@F
-	mov	es:[edi].HDAREGS.statests,ax	; write 1s back to clear the bits
-
-@@:
 	mov	dl,es:[edi].HDAREGS.rirbsts
 
 	bt	dx,2		; RIRBOIS
