@@ -155,6 +155,9 @@ firststreamoff	dd 0
 
 dwCorbPhys	dd 0		; Physical address of CORB/RIRB/BDL buffer
 
+dwMainBufPhys	dd 0		; Physical address of DMA buffer passed from host application
+dwMainBufSize	dd 0		; Size of DMA buffer passed from host application
+
 mPICeoi		db 0		; EOI signal to send to master PIC
 sPICeoi		db 0		; EOI signal (if any) to send to slave PIC
 
@@ -181,6 +184,14 @@ dacnode		db 0
 
 corbwpmask	db 0FFh
 rirbwpmask	db 0FFh
+
+; number of Controller/Stream Resets attempted during the current timer period
+; (in response to error interrupts)
+crst_count	db 0
+srst_count	db 0
+; give up after this many:
+?CRST_MAX	equ 3
+?SRST_MAX	equ 3
 
 if	?DEBUGLOG
 CStr macro text:vararg	;define a string in .code
@@ -249,27 +260,13 @@ openlog		proc near stdcall	uses eax ecx edx	pszFilename:dword
 	ret
 openlog		endp
 
-printtolog	proc near stdcall	uses eax ebx ecx edx	pszOutStr:dword
+printtolog	proc near stdcall	uses ebx edx	pszOutStr:dword
 	mov	ebx,[debuglog_hdl]
 	cmp	ebx,-1
 	je	@F
 
-	mov	eax,4000h	; WRITE
-
-	xor	ecx,ecx
-	dec	ecx
-	push	es
-	push	edi
-	mov	edx,ds
-	mov	es,edx
 	mov	edx,[pszOutStr]
-	mov	edi,edx
-	repne	scasb
-	pop	edi
-	pop	es
-	not	ecx		; ECX now has the string length
-
-	int	21h
+	call	printtofile
 @@:
 	ret
 printtolog	endp
@@ -496,8 +493,8 @@ endif
 if	?DEBUGLOG
 	invoke	printtolog, CStr("Starting CORB/RIRB DMA engines...",0Dh,0Ah)
 endif
-	or	es:[edi].HDAREGS.corbctl,2
-	or	es:[edi].HDAREGS.rirbctl,7	; turn on and enable interrupts
+	or	es:[edi].HDAREGS.corbctl,3	; turn on and enable interrupts
+	or	es:[edi].HDAREGS.rirbctl,6	; turn on and enable overrun interrupt
 	mov	ecx,1000h
 @@:
 	call	wait_timerch2
@@ -724,6 +721,23 @@ if	?DEBUGLOG
 	invoke	printtolog, CStr("WAKEEN blanked",0Dh,0Ah)
 endif
 
+	movzx	eax,es:[edi].HDAREGS.statests
+	.if	eax
+if	?DEBUGLOG
+	 invoke	printtolog, CStr("blanking STATESTS...",0Dh,0Ah)
+endif
+	 mov	es:[edi].HDAREGS.statests,ax	; write 1s back to clear the bits
+	 mov	ecx,1000h
+@@:
+	 call	wait_timerch2
+	 movzx	eax,es:[edi].HDAREGS.statests
+	 test	eax,eax
+	 loopnz	@B
+	.endif
+if	?DEBUGLOG
+	invoke	printtolog, CStr("STATESTS blank",0Dh,0Ah)
+endif
+
 	or	es:[edi].HDAREGS.intctl,0C0000000h	; GIE + CIE
 	mov	ecx,1000h
 @@:
@@ -833,6 +847,19 @@ endif
 	   loopnz	@B
 if	?DEBUGLOG
 	   invoke printtolog, CStr("CORB/RIRB stopped",0Dh,0Ah)
+endif
+
+	   btr	es:[edi].HDAREGS.gctl,0
+if	?DEBUGLOG
+	   invoke printtolog, CStr("Resetting HDA controller...",0Dh,0Ah)
+endif
+	   mov	ecx,10000h
+@@:
+	   call	wait_timerch2
+	   test	es:[edi].HDAREGS.gctl,1
+	   loopnz @B
+if	?DEBUGLOG
+	   invoke printtolog, CStr("HDA controller reset",0Dh,0Ah)
 endif
 
 	   mov	ebx,es
@@ -1006,6 +1033,9 @@ endif
 	bt	es:[edi].STREAM.wCtl,1	; RUN bit
 	jc	@@skip
 
+	mov	[dwMainBufPhys],edx
+	mov	[dwMainBufSize],ecx
+
 	test	edx,7Fh		; 128-byte aligned?
 	jz	@F
 
@@ -1051,7 +1081,7 @@ endif
 if	?DEBUGLOG
 	invoke	printtolog, CStr("starting stream",0Dh,0Ah)
 endif
-	bts	es:[edi].STREAM.wCtl,1	; RUN bit
+	or	es:[edi].STREAM.wCtl,11110b	; RUN bit, plus all Interrupt Enable bits
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("connecting stream to DAC",0Dh,0Ah)
@@ -1100,6 +1130,10 @@ endif
 	btr	es:[edi].STREAM.wCtl,1	; RUN bit
 	jnc	@@skip
 
+	xor	ecx,ecx
+	mov	[dwMainBufPhys],ecx
+	mov	[dwMainBufSize],ecx
+
 if	?DEBUGLOG
 	invoke	printtolog, CStr("Waiting for DMA engine to stop...",0Dh,0Ah)
 endif
@@ -1131,6 +1165,19 @@ if	?DEBUGLOG
 	invoke	printtolog, CStr("Stream reset, restoring format",0Dh,0Ah)
 endif
 	pop	es:[edi].STREAM.wFormat
+
+	xor	eax,eax
+	cmp	eax,[dwAuxSelHdl]
+	jz	@@skip
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Freeing aux buffer...",0Dh,0Ah)
+endif
+	xchg	eax,[dwAuxSelHdl]
+	call	free_dma_buf
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Done",0Dh,0Ah)
+endif
 
 @@skip:
 	pop	es
@@ -1269,6 +1316,21 @@ drv_getcallfn	endp
 ; ------------------------------------------------------------------------------ ;
 ; INTERNAL functions from here (called from within ENUM and interrupt functions) ;
 ; ------------------------------------------------------------------------------ ;
+
+; Takes file handle in EBX, zero-terminated string in EDX
+printtofile	proc near	uses eax ecx es edi
+	xor	ecx,ecx
+	dec	ecx
+	push	ds
+	pop	es
+	mov	edi,edx
+	repne	scasb
+	not	ecx		; ECX now has the string length
+
+	mov	eax,4000h	; WRITE
+	int	21h
+	ret
+printtofile	endp
 
 ; Unmute and set the amplifier gain to 0 dB for [node]
 ; If EAX is zero, only does the output amp, otherwise does both input and output
@@ -1995,6 +2057,141 @@ unmask_irq	proc near	uses eax ecx edx
 	ret
 unmask_irq	endp
 
+send_eoi	proc near
+	mov	al,[mPICeoi]
+	mov	dx,20h
+	out	dx,al
+
+	mov	al,[sPICeoi]
+	test	al,al
+	jz	@F
+	mov	dx,0A0h
+	out	dx,al
+@@:
+
+	ret
+send_eoi	endp
+
+printstderr	proc near stdcall	uses ebx edx	pszOutStr:dword
+	mov	ebx,2
+	mov	edx,[pszOutStr]
+	call	printtofile
+	ret
+printstderr	endp
+
+handle_rirbois	proc near
+	; This may not even show up on the terminal if a game is being played!
+	invoke	printstderr, CStr(33o,"[31m","Non-fatal: RIRB overrun",33o,"[37m",0Dh,0Ah)
+	ret
+handle_rirbois	endp
+
+; Hope we never need this...
+drv_reset	proc near
+	mov	eax,[dwMainBufPhys]
+	push	eax
+	push	[dwMainBufSize]
+
+	test	eax,eax		; buffer set iff start has been called (i.e. sound playing)
+	jz	@F
+	pushad
+	call	drv_stop
+	popad
+@@:
+	pushad
+	call	drv_uninit
+
+	cmp	[crst_count],?CRST_MAX
+	jb	@F
+	
+	mov	ax,3		; switch to VGA text mode
+	int	10h
+	invoke	printstderr, CStr(33o,"[31m","FATAL: Too many HDA controller resets!",33o,"[37m",0Dh,0Ah)
+	call	send_eoi	; avoid annoying the rest of the OS...
+	mov	ax,4CFFh	; exit with -1 code (pull down the application)
+	int	21h
+
+@@:	
+	mov	bx,[wPort]
+	mov	cx,[wIrqDma]
+	mov	al,[pinnode]
+	mov	[node],al
+	mov	si,[wParam]
+	call	drv_init
+	popad
+
+	xchg	edi,[esp+4]
+	xchg	ecx,[esp]
+	test	edi,edi
+	jz	@F
+	pushad
+	call	drv_start
+	popad
+
+@@:
+	inc	[crst_count]
+	pop	ecx
+	pop	edi
+	ret
+drv_reset	endp
+
+handle_cmei	proc near
+	invoke	printstderr, CStr(33o,"[31m","CORB Memory Error, attempting reset...",33o,"[37m",0Dh,0Ah)
+	call	drv_reset
+	invoke	printstderr, CStr(33o,"[31m","Reset complete",33o,"[37m",0Dh,0Ah)
+	ret
+handle_cmei	endp
+
+; Hope we never need this...
+stream_reset	proc near
+	mov	eax,[dwMainBufPhys]
+	push	eax
+	push	[dwMainBufSize]
+	pushad
+	call	drv_stop
+	popad
+
+	cmp	[srst_count],?SRST_MAX
+	jb	@F
+	
+	mov	ax,3		; switch to VGA text mode
+	int	10h
+	invoke	printstderr, CStr(33o,"[31m","FATAL: Too many HDA stream resets!",33o,"[37m",0Dh,0Ah)
+	call	send_eoi	; avoid annoying the rest of the OS...
+	mov	ax,4CFFh	; exit with -1 code (pull down the application)
+	int	21h
+
+@@:	
+	xchg	edi,[esp+4]
+	xchg	ecx,[esp]
+	pushad
+	call	drv_start
+	popad
+
+	inc	[srst_count]
+	pop	ecx
+	pop	edi
+	ret
+stream_reset	endp
+
+handle_dese	proc near
+	invoke	printstderr, CStr(33o,"[31m","Stream Descriptor Error, attempting reset...",33o,"[37m",0Dh,0Ah)
+	call	stream_reset
+	invoke	printstderr, CStr(33o,"[31m","Stream Reset complete",33o,"[37m",0Dh,0Ah)
+	ret
+handle_dese	endp
+
+handle_fifoe	proc near
+	; This may not even show up on the terminal if a game is being played!
+	invoke	printstderr, CStr(33o,"[31m","Non-fatal: FIFO underrun",33o,"[37m",0Dh,0Ah)
+	ret
+handle_fifoe	endp
+
+handle_bcis	proc near
+	; This may not even show up on the terminal if a game is being played!
+	invoke	printstderr, CStr(33o,"[35m","Unexpected Buffer Completion Interrupt (not programmed for this, at least not yet...)",33o,"[37m",0Dh,0Ah)
+	ret
+handle_bcis	endp
+
 ; ---------------------------------------------------------------------- ;
 ; EXTERNAL functions from here (called directly from outside our driver) ;
 ; ---------------------------------------------------------------------- ;
@@ -2008,26 +2205,80 @@ irq_handler	proc
 	mov	ds,cs:[lpPortList_seg]
 	assume	ds:_TEXT
 	call	get_hdareg_ptr
-	mov	eax,es:[edi].HDAREGS.intsts
-	test	eax,eax
-	jz	@@not_ours
+	mov	ebx,es:[edi].HDAREGS.intsts
+	bt	ebx,31		; GIS
+	jnc	@@not_ours
 
 	bts	[statusword],2
-	jc	@F		; already entered
+	jc	@@skip		; already entered
 
-	; for now, just send EOI...
-	mov	al,[mPICeoi]
-	mov	dx,20h
-	out	dx,al
+	bt	ebx,30		; CIS
+	jnc	@@not_rirb
 
-	mov	al,[sPICeoi]
-	test	al,al
+	movzx	eax,es:[edi].HDAREGS.statests	; don't care about this...
+	test	eax,eax
 	jz	@F
-	mov	dx,0A0h
-	out	dx,al
-@@:
+	mov	es:[edi].HDAREGS.statests,ax	; write 1s back to clear the bits
 
+@@:
+	mov	dl,es:[edi].HDAREGS.rirbsts
+
+	bt	dx,2		; RIRBOIS
+	jnc	@F
+	call	handle_rirbois
+
+@@:
+	; don't bother with RINTFL, since we always use send_cmd_wait which polls anyway
+	; - this may change in the future...
+	;bt	dx,0		; RINTFL
+	;jnc	@F
+	;call	handle_rintfl
+
+@@:
+	; write 1s back to the bits we've addressed
+	mov	es:[edi].HDAREGS.rirbsts,dl
+
+	mov	dl,es:[edi].HDAREGS.corbsts
+	bt	dx,0		; CMEI
+	jnc	@F
+	call	handle_cmei
+@@:
+	; write 1s back to the bits we've addressed
+	mov	es:[edi].HDAREGS.corbsts,dl
+
+@@not_rirb:
+	movzx	eax,es:[edi].HDAREGS.gcap
+	shr	eax,8
+	and	eax,0Fh		; number of input streams
+	bt	ebx,eax		; SIS from the first output stream
+	jnc	@@not_stream
+
+	mov	edi,[firststreamoff]
+	mov	dl,es:[edi].STREAM.bSts
+
+	bt	dx,4		; DESE
+	jnc	@F
+	call	handle_dese
+
+@@:
+	bt	dx,3		; FIFOE
+	jnc	@F
+	call	handle_fifoe
+
+@@:
+	bt	dx,2		; BCIS
+	jnc	@F
+	call	handle_bcis
+
+@@:
+	; write 1s back to the bits we've addressed
+	mov	es:[edi].STREAM.bSts,dl
+
+@@not_stream:
+	call	send_eoi
 	btr	[statusword],2
+
+@@skip:
 	pop	es
 	pop	ds
 	assume	ds:nothing
@@ -2047,6 +2298,8 @@ irq_handler	endp
 ; and the address behind which we want it blanked in EDX.
 timer_handler	proc far
 	push	ds
+	xor	eax,eax		; return zero by default
+	mov	edx,eax
 
 	mov	ds,cs:[lpPortList_seg]
 	assume	ds:_TEXT
@@ -2054,6 +2307,9 @@ timer_handler	proc far
 	jc	@@skip
 	bt	[statusword],0
 	jnc	@@skip
+
+	mov	[crst_count],al
+	mov	[srst_count],al
 
 	push	fs
 	push	esi
