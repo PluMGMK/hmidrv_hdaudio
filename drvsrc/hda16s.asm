@@ -267,6 +267,17 @@ openlog		proc near stdcall	uses eax ecx edx	pszFilename:dword
 	ret
 openlog		endp
 
+oldvidmode	db ?
+logtostderr	proc near		uses eax ebx
+	mov	ah,0Fh		; get current video mode
+	int	10h
+	mov	[oldvidmode],al
+	mov	ax,3		; switch to VGA text mode
+	int	10h
+	mov	[debuglog_hdl],2
+	ret
+logtostderr	endp
+
 printtolog	proc near stdcall	uses ebx edx	pszOutStr:dword
 	mov	ebx,[debuglog_hdl]
 	cmp	ebx,-1
@@ -307,8 +318,13 @@ closelog	proc near	uses eax ebx
 	mov	ebx,[debuglog_hdl]
 	cmp	ebx,-1
 	je	@F
-	int	21h
-	jc	@F
+	.if	ebx == 2
+	  movzx	ax,[oldvidmode]	; Reset video mode
+	  int	10h
+	.else
+	  int	21h
+	  jc	@F
+	.endif
 	mov	[debuglog_hdl],-1
 @@:
 	ret
@@ -327,6 +343,7 @@ endif
 drv_init	proc near
 if	?DEBUGLOG
 	invoke	openlog, CStr("HDA_INIT.LOG")
+	;call	logtostderr
 endif
 	; fill in the data that the caller gives us
 	mov	[wPort],bx
@@ -352,7 +369,6 @@ endif
 	push	es
 	call	get_hdareg_ptr
 	jc	@@init_failed
-	; start up the controller
 	bts	es:[edi].HDAREGS.gctl,0
 	jc	@@hda_running
 
@@ -360,12 +376,6 @@ if	?DEBUGLOG
 	invoke	printtolog, CStr("Initializing HDA controller...",0Dh,0Ah)
 endif
 	mov	ecx,10000h
-if	?DEBUGLOG
-	invoke	printtolog, CStr("Bits in GCTL register: ")
-	invoke	printbinword,word ptr es:[edi+2].HDAREGS.gctl
-	invoke	printbinword,word ptr es:[edi].HDAREGS.gctl
-	invoke	printtolog, CStr(0Dh,0Ah)
-endif
 @@:
 	call	wait_timerch2
 	test	es:[edi].HDAREGS.gctl,1
@@ -430,7 +440,14 @@ endif
 	call	wait_timerch2
 	test	es:[edi].HDAREGS.corbctl,2
 	loopnz	@B
+	jz	@F
 
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Timed out stopping CORB DMA Engine!",0Dh,0Ah)
+endif
+	jmp	@@init_failed
+
+@@:
 	mov	edx,[dwCorbPhys]
 	mov	dword ptr es:[edi].HDAREGS.corbbase,edx
 	mov	dword ptr es:[edi].HDAREGS.corbbase+4,0
@@ -438,6 +455,11 @@ endif
 	mov	dword ptr es:[edi].HDAREGS.rirbbase,edx
 	mov	dword ptr es:[edi].HDAREGS.rirbbase+4,0
 
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Bits in CORB write pointer: ")
+	invoke	printbinword, es:[edi].HDAREGS.corbwp
+	invoke	printtolog, CStr(0Dh,0Ah)
+endif
 	mov	es:[edi].HDAREGS.corbwp,0	; reset CORB write pointer
 	mov	es:[edi].HDAREGS.rirbwp,8000h	; reset RIRB write pointer
 	mov	es:[edi].HDAREGS.rirbric,1	; raise an IRQ on *every* response!
@@ -448,11 +470,6 @@ endif
 	bts	es:[edi].HDAREGS.corbrp,15
 	jc	@@corb_in_reset
 	mov	ecx,1000h
-if	?DEBUGLOG
-	invoke	printtolog, CStr("Bits in CORB read pointer: ")
-	invoke	printbinword, es:[edi].HDAREGS.corbrp
-	invoke	printtolog, CStr(0Dh,0Ah)
-endif
 @@:
 	call	wait_timerch2
 	cmp	es:[edi].HDAREGS.corbrp,0
@@ -462,9 +479,9 @@ endif
 	jnz	@@corb_in_reset
 
 if	?DEBUGLOG
-	invoke	printtolog, CStr("Timed out resetting CORB read pointer!",0Dh,0Ah)
+	invoke	printtolog, CStr("Timed out resetting CORB read pointer, continuing anyway...",0Dh,0Ah)
 endif
-	jmp	@@init_failed
+	jmp	@F
 
 @@corb_in_reset:
 if	?DEBUGLOG
@@ -480,11 +497,12 @@ endif
 	jz	@F
 
 if	?DEBUGLOG
-	invoke	printtolog, CStr("Timed out taking CORB read pointer out of reset!",0Dh,0Ah)
+	invoke	printtolog, CStr("Timed out taking CORB read pointer out of reset, continuing anyway...",0Dh,0Ah)
 endif
-	jmp	@@init_failed
 
 @@:
+	mov	ax,es:[edi].HDAREGS.corbrp
+	mov	es:[edi].HDAREGS.corbwp,ax
 
 	mov	al,es:[edi].HDAREGS.corbsize
 	mov	ah,al
@@ -599,6 +617,14 @@ endif
 	call	wait_timerch2
 	test	es:[edi].HDAREGS.corbctl,2
 	loopz	@B
+	jnz	@F
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Timed out initializing HDA controller!",0Dh,0Ah)
+endif
+	jmp	@@init_failed
+
+@@:
 if	?DEBUGLOG
 	invoke	printtolog, CStr("CORB/RIRB up and running!",0Dh,0Ah,"Checking attributes of selected widget...",0Dh,0Ah)
 endif
@@ -1909,6 +1935,7 @@ endif
 if	?DEBUGLOG
 	   invoke	printtolog, CStr("Mapping page(s) containing BAR0...",0Dh,0Ah)
 endif
+	   and	cl,0F0h		; prevent off-by-four errors and the like
 	   mov	ebx,ecx
 	   shr	ebx,10h		; get the full address into BX:CX
 if	?DEBUGLOG
@@ -1948,17 +1975,7 @@ endif
 	 jc	@F
 	 mov	[hdareg_seg],ax
 if	?DEBUGLOG
-	 pushad
-	 mov	ax,6	; get segment base
-	 mov	bx,[hdareg_seg]
-	 int	31h
-	 invoke	printtolog, CStr("Bits in hdareg_seg base address: ")
-	 invoke	printbinword,cx
-	 invoke	printbinword,dx
-	 invoke	printtolog, CStr(0Dh,0Ah)
-	 popad
-
-	 invoke	printtolog, CStr("Far pointer created successfully",0Dh,0Ah,0Dh,0Ah)
+	 invoke	printtolog, CStr("Far pointer created successfully",0Dh,0Ah)
 endif
 	.endif
 
