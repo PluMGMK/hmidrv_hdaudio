@@ -69,7 +69,7 @@ start:
 align 4
 ; Capabilities structure to be returned by function call
 sCaps:
-szDeviceName	db "HDA 16 ST"
+szDeviceName	db "HD Audio 16 Stereo"
 	NAMELEN	equ $-szDeviceName
 		db (20h - NAMELEN) dup (0)
 wDeviceVersion	dd 0	; Not production yet! XD
@@ -243,6 +243,13 @@ entry	proc far
 	retf
 entry	endp
 
+printstderr	proc near stdcall	uses ebx edx	pszOutStr:dword
+	mov	ebx,2
+	mov	edx,[pszOutStr]
+	call	printtofile
+	ret
+printstderr	endp
+
 if	?DEBUGLOG
 ; ---------------------------------- ;
 ; INTERNAL DEBUG functions from here ;
@@ -270,6 +277,30 @@ printtolog	proc near stdcall	uses ebx edx	pszOutStr:dword
 @@:
 	ret
 printtolog	endp
+
+; Print 16 bits to the debug log
+curbinword	db 16 dup (?)
+		db 0
+printbinword	proc near stdcall	uses es edi ecx ebx eax	wOut:word
+	mov	ebx,ds
+	mov	es,ebx
+	pushf
+	cld
+	mov	edi,offset curbinword
+
+	mov	bx,[wOut]
+	mov	ecx,size curbinword
+@@:
+	shl	bx,1
+	setc	al
+	add	al,'0'		; AL = '0' if not carry, '1' if carry
+	stosb
+	loop	@B
+
+	invoke	printtolog, offset curbinword
+	popf
+	ret
+printbinword	endp
 
 closelog	proc near	uses eax ebx
 	mov	ah,3Eh		; CLOSE
@@ -329,6 +360,12 @@ if	?DEBUGLOG
 	invoke	printtolog, CStr("Initializing HDA controller...",0Dh,0Ah)
 endif
 	mov	ecx,10000h
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Bits in GCTL register: ")
+	invoke	printbinword,word ptr es:[edi+2].HDAREGS.gctl
+	invoke	printbinword,word ptr es:[edi].HDAREGS.gctl
+	invoke	printtolog, CStr(0Dh,0Ah)
+endif
 @@:
 	call	wait_timerch2
 	test	es:[edi].HDAREGS.gctl,1
@@ -341,8 +378,15 @@ endif
 	jmp	@@init_failed
 
 @@hda_running:
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Bits in GCTL register: ")
+	invoke	printbinword,word ptr es:[edi+2].HDAREGS.gctl
+	invoke	printbinword,word ptr es:[edi].HDAREGS.gctl
+	invoke	printtolog, CStr(0Dh,0Ah)
+endif
 	; make sure interrupts are off until we set up IRQ...
 	xor	eax,eax
+	bt	es:[edi].HDAREGS.intctl,31
 	mov	es:[edi].HDAREGS.intctl,eax
 	jnc	@@interrupts_off
 
@@ -358,7 +402,7 @@ if	?DEBUGLOG
 endif
 	mov	ax,0B109h	; read configuration word
 	mov	edi,4		; command register
-	int	1Ah		; trust DOS extender to redirect this appropriately...
+	int	1Ah
 	jc	@@init_failed
 	bts	cx,2		; bit 2 = bus master enabled
 	jc	@@busmaster_ok
@@ -366,8 +410,8 @@ endif
 if	?DEBUGLOG
 	invoke	printtolog, CStr("Setting busmaster flag...",0Dh,0Ah)
 endif
-	mov	ax,0B10Ch	; write configuration dword
-	int	1Ah		; trust DOS extender to redirect this appropriately...
+	mov	ax,0B10Ch	; write configuration word
+	int	1Ah
 	jc	@@init_failed
 
 @@busmaster_ok:
@@ -401,21 +445,46 @@ endif
 if	?DEBUGLOG
 	invoke	printtolog, CStr("Resetting CORB read pointer...",0Dh,0Ah)
 endif
-	or	byte ptr es:[edi].HDAREGS.corbrp+1,80h
+	bts	es:[edi].HDAREGS.corbrp,15
+	jc	@@corb_in_reset
 	mov	ecx,1000h
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Bits in CORB read pointer: ")
+	invoke	printbinword, es:[edi].HDAREGS.corbrp
+	invoke	printtolog, CStr(0Dh,0Ah)
+endif
 @@:
 	call	wait_timerch2
 	cmp	es:[edi].HDAREGS.corbrp,0
 	jz	@F
 	test	byte ptr es:[edi].HDAREGS.corbrp+1,80h
 	loopz	@B
+	jnz	@@corb_in_reset
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Timed out resetting CORB read pointer!",0Dh,0Ah)
+endif
+	jmp	@@init_failed
+
+@@corb_in_reset:
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Reset bit on, turning it back off...",0Dh,0Ah)
+endif
 @@:
-	and	byte ptr es:[edi].HDAREGS.corbrp+1,7Fh
+	btr	es:[edi].HDAREGS.corbrp,15
 	mov	ecx,1000h
 @@:
 	call	wait_timerch2
 	test	byte ptr es:[edi].HDAREGS.corbrp+1,80h
 	loopnz	@B
+	jz	@F
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Timed out taking CORB read pointer out of reset!",0Dh,0Ah)
+endif
+	jmp	@@init_failed
+
+@@:
 
 	mov	al,es:[edi].HDAREGS.corbsize
 	mov	ah,al
@@ -424,6 +493,9 @@ endif
 
 	bt	ax,0Eh				; 256 entries possible?
 	jnc	@F
+if	?DEBUGLOG
+	invoke	printtolog, CStr("CORB supports 256 entries",0Dh,0Ah)
+endif
 	cmp	al,2				; 256 entries set?
 	je	@@corbsizeok
 	mov	al,2
@@ -432,6 +504,9 @@ endif
 @@:
 	bt	ax,0Dh				; 16 entries possible?
 	jnc	@F
+if	?DEBUGLOG
+	invoke	printtolog, CStr("CORB supports 16 entries",0Dh,0Ah)
+endif
 	cmp	al,1				; 16 entries set?
 	mov	[corbwpmask],0Fh		; CORB WP wraps every 16 entries!
 	je	@@corbsizeok
@@ -440,10 +515,16 @@ endif
 
 @@:
 	; if we're here, then only 2 entries are possible, and must already be set
+if	?DEBUGLOG
+	invoke	printtolog, CStr("CORB only supports 2 entries",0Dh,0Ah)
+endif
 	mov	[corbwpmask],1			; wraps every second entry!
 	jmp	@@corbsizeok
 
 @@setcorbsize:
+if	?DEBUGLOG
+	invoke	printtolog, CStr("setting CORB size...",0Dh,0Ah)
+endif
 	or	al,ah
 	mov	es:[edi].HDAREGS.corbsize,al
 	mov	ecx,1000h
@@ -453,6 +534,9 @@ endif
 	loopne	@B
 
 @@corbsizeok:
+if	?DEBUGLOG
+	invoke	printtolog, CStr("CORB size set",0Dh,0Ah)
+endif
 	mov	al,es:[edi].HDAREGS.rirbsize
 	mov	ah,al
 	and	al,3				; two bits setting the size
@@ -460,6 +544,9 @@ endif
 
 	bt	ax,0Eh				; 256 entries possible?
 	jnc	@F
+if	?DEBUGLOG
+	invoke	printtolog, CStr("RIRB supports 256 entries",0Dh,0Ah)
+endif
 	cmp	al,2				; 256 entries set?
 	je	@@rirbsizeok
 	mov	al,2
@@ -468,6 +555,9 @@ endif
 @@:
 	bt	ax,0Dh				; 16 entries possible?
 	jnc	@F
+if	?DEBUGLOG
+	invoke	printtolog, CStr("RIRB supports 16 entries",0Dh,0Ah)
+endif
 	cmp	al,1				; 16 entries set?
 	mov	[rirbwpmask],0Fh		; RIRB WP wraps every 16 entries!
 	je	@@rirbsizeok
@@ -476,10 +566,16 @@ endif
 
 @@:
 	; if we're here, then only 2 entries are possible, and must already be set
+if	?DEBUGLOG
+	invoke	printtolog, CStr("RIRB only supports 2 entries",0Dh,0Ah)
+endif
 	mov	[rirbwpmask],1			; wraps every second entry!
 	jmp	@@rirbsizeok
 
 @@setrirbsize:
+if	?DEBUGLOG
+	invoke	printtolog, CStr("setting RIRB size...",0Dh,0Ah)
+endif
 	or	al,ah
 	mov	es:[edi].HDAREGS.rirbsize,al
 	mov	ecx,1000h
@@ -489,6 +585,9 @@ endif
 	loopne	@B
 
 @@rirbsizeok:
+if	?DEBUGLOG
+	invoke	printtolog, CStr("RIRB size set",0Dh,0Ah)
+endif
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("Starting CORB/RIRB DMA engines...",0Dh,0Ah)
@@ -501,32 +600,26 @@ endif
 	test	es:[edi].HDAREGS.corbctl,2
 	loopz	@B
 if	?DEBUGLOG
-	invoke	printtolog, CStr("CORB/RIRB up and running!",0Dh,0Ah)
+	invoke	printtolog, CStr("CORB/RIRB up and running!",0Dh,0Ah,"Checking attributes of selected widget...",0Dh,0Ah)
 endif
 
 	mov	ax,0F00h	; get parameter
 	mov	edx,9		; audio widget capabilities
 	call	send_cmd_wait
 	bt	eax,0
-	jc	@F
-
+	jnc	@@init_failed
 if	?DEBUGLOG
-	invoke	printtolog, CStr("selected widget is not stereo, aborting",0Dh,0Ah)
+	invoke	printtolog, CStr("selected widget is stereo",0Dh,0Ah)
 endif
-	jmp	@@init_failed
 
-@@:
 	shr	eax,20
 	and	al,0Fh
 	cmp	al,WTYPE_PIN
-	je	@F
-
+	jne	@@init_failed
 if	?DEBUGLOG
-	invoke	printtolog, CStr("selected widget is not a pin, aborting",0Dh,0Ah)
+	invoke	printtolog, CStr("selected widget is a pin",0Dh,0Ah)
 endif
-	jmp	@@init_failed
 
-@@:
 	; OK, we won't be sending commands to this again for a while...
 	mov	bl,[node]
 	mov	[pinnode],bl
@@ -550,20 +643,20 @@ endif
 	jmp	@@init_failed
 
 @@:
+if	?DEBUGLOG
+	invoke	printtolog, CStr("found function group containing selected widget",0Dh,0Ah)
+endif
 	; now, [node] should be a functional group, which contains our [pinnode]
 	mov	ax,0F00h	; get parameter
 	mov	edx,5		; function group type
 	call	send_cmd_wait
 	and	al,7Fh
 	cmp	al,1		; audio function group
-	je	@F
-
+	jne	@@init_failed
 if	?DEBUGLOG
-	invoke	printtolog, CStr("selected widget does not belong to an audio function group, aborting",0Dh,0Ah)
+	invoke	printtolog, CStr("it is an audio function group",0Dh,0Ah)
 endif
-	jmp	@@init_failed
 
-@@:
 	mov	al,[node]
 	mov	[afgnode],al
 
@@ -781,6 +874,9 @@ endif
 	call	mask_irq
 	btr	[statusword],0
 
+if	?DEBUGLOG
+	invoke	printtolog, CStr("checking if HDA register far pointer exists...",0Dh,0Ah)
+endif
 	xor	eax,eax
 	.if	[hdareg_seg] != ax
 	   push	es
@@ -873,6 +969,9 @@ endif
 	   pop	es
 	.endif
 
+if	?DEBUGLOG
+	invoke	printtolog, CStr("checking if HDA register linear map exists...",0Dh,0Ah)
+endif
 	mov	ecx,[hdareg_linaddr]
 	cmp	ecx,eax
 	jz	@F
@@ -1289,7 +1388,9 @@ if	?DEBUGLOG
 endif
 	call	fill_portlist
 if	?DEBUGLOG
+	jc	@F
 	invoke	printtolog, CStr("'port' list filled",0Dh,0Ah)
+@@:
 endif
 	mov	edx,offset sCaps
 if	?DEBUGLOG
@@ -1324,8 +1425,10 @@ printtofile	proc near	uses eax ecx es edi
 	push	ds
 	pop	es
 	mov	edi,edx
+	xor	eax,eax
 	repne	scasb
-	not	ecx		; ECX now has the string length
+	not	ecx		; ECX now has the string length plus one
+	dec	ecx
 
 	mov	eax,4000h	; WRITE
 	int	21h
@@ -1808,6 +1911,12 @@ if	?DEBUGLOG
 endif
 	   mov	ebx,ecx
 	   shr	ebx,10h		; get the full address into BX:CX
+if	?DEBUGLOG
+	 invoke	printtolog, CStr("Bits in BAR0: ")
+	 invoke	printbinword,bx
+	 invoke	printbinword,cx
+	 invoke	printtolog, CStr(0Dh,0Ah)
+endif
 	   xor	esi,esi
 	   mov	edi,size HDAREGS
 	   call	map_physmem
@@ -1823,15 +1932,32 @@ endif
 	   mov	ebx,ecx
 	   shr	ebx,10h
 	 .endif
+if	?DEBUGLOG
+	 invoke	printtolog, CStr("Bits in hdareg_linaddr: ")
+	 invoke	printbinword,bx
+	 invoke	printbinword,cx
+	 invoke	printtolog, CStr(0Dh,0Ah)
+endif
 
 if	?DEBUGLOG
 	 invoke	printtolog, CStr("Allocating selector...",0Dh,0Ah)
 endif
 	 mov	edi,size HDAREGS
+	 xor	esi,esi
 	 call	alloc_selector
 	 jc	@F
 	 mov	[hdareg_seg],ax
 if	?DEBUGLOG
+	 pushad
+	 mov	ax,6	; get segment base
+	 mov	bx,[hdareg_seg]
+	 int	31h
+	 invoke	printtolog, CStr("Bits in hdareg_seg base address: ")
+	 invoke	printbinword,cx
+	 invoke	printbinword,dx
+	 invoke	printtolog, CStr(0Dh,0Ah)
+	 popad
+
 	 invoke	printtolog, CStr("Far pointer created successfully",0Dh,0Ah,0Dh,0Ah)
 endif
 	.endif
@@ -1944,6 +2070,7 @@ alloc_selector	proc near
 	mov	cx,si
 	mov	ax,8		; set segment limit
 	dec	dx		; change size to limit
+	sbb	cx,0
 	int	31h
 	jc	@F
 
@@ -1976,13 +2103,15 @@ fill_portlist	proc near	; fill in the "port" list with all PCI audio devices det
 	.while	(esi < DEVSTOENUMERATE) && (ah != 86h)
 	   mov	ax,0B103h	; find PCI class code
 	   mov	ecx,040300h	; class=4 (multimedia), subclass=3 (audio), no progif
-	   int	1Ah		; trust DOS extender to redirect this appropriately...
+	   int	1Ah
 	   jc	@F
 	   mov	[PortList+esi*2],bx
+	   inc	esi
 	@@:
 	.endw
 
 	pop	esi
+	clc
 
 @@noPCI:
 	pop	edx
@@ -1996,10 +2125,10 @@ check_pci_bios	proc near	; Spoils EAX,EBX,ECX,EDX...
 	push	edi
 
 	mov	ax,0B101h
-	int	1Ah		; trust DOS extender to redirect this appropriately...
+	int	1Ah
 	test	ah,ah
 	stc
-	jz	@F
+	jnz	@F
 
 	cmp	edx," ICP"
 	stc
@@ -2071,13 +2200,6 @@ send_eoi	proc near
 
 	ret
 send_eoi	endp
-
-printstderr	proc near stdcall	uses ebx edx	pszOutStr:dword
-	mov	ebx,2
-	mov	edx,[pszOutStr]
-	call	printtofile
-	ret
-printstderr	endp
 
 handle_rirbois	proc near
 	; This may not even show up on the terminal if a game is being played!
@@ -2396,3 +2518,8 @@ timer_handler	proc far
 timer_handler	endp
 
 _TEXT	ends
+
+; make sure the assembler knows all the CStrs are in the right segment!
+DGROUP	group	_TEXT, CONST
+
+end	start
