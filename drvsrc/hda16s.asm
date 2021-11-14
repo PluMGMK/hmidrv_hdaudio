@@ -77,7 +77,7 @@ wBitsPerSample	dd 16	; 16-bit driver
 wChannels	dd (FORMATLOBYTE AND 0Fh) ; CHAN
 wMinRate	dd 8000
 wMaxRate	dd 48000
-wMixerOnBoard	dd 0	; Figure this out later
+wMixerOnBoard	dd 0	; Perhaps, but can't guarantee this
 wMixerFlags	dd 0
 wFlags		dd 200h	; Pseudo-DMA
 lpPortList	label	fword
@@ -178,6 +178,9 @@ statusword	dw 0
 ; bitmap representing rates supported by the currently-selected DAC node
 ratebitmap	dw 0
 
+; software rate divider
+soft_divider	db 1
+
 pinnode		db 0
 afgnode		db 0
 dacnode		db 0
@@ -256,8 +259,12 @@ if	?DEBUGLOG
 ; ---------------------------------- ;
 	assume	ds:_TEXT	; always called from within DS-set portion of entry point
 
-openlog		proc near stdcall	uses eax ecx edx	pszFilename:dword
-	mov	ah,3Ch		; CREAT
+openlog		proc near stdcall	uses eax ecx edx	pszFilename:dword,append:byte
+	.if	[append]
+	  mov	ax,3D02h	; OPEN R/W
+	.else
+	  mov	ah,3Ch		; CREAT
+	.endif
 	xor	ecx,ecx		; no special attributes
 	mov	edx,[pszFilename]
 	int	21h
@@ -279,7 +286,7 @@ logtostderr	proc near		uses eax ebx
 logtostderr	endp
 
 printtolog	proc near stdcall	uses ebx edx	pszOutStr:dword
-	mov	ebx,[debuglog_hdl]
+	mov	ebx,cs:[debuglog_hdl]
 	cmp	ebx,-1
 	je	@F
 
@@ -342,8 +349,7 @@ endif
 ; Returns nothing
 drv_init	proc near
 if	?DEBUGLOG
-	invoke	openlog, CStr("HDA_INIT.LOG")
-	;call	logtostderr
+	invoke	openlog, CStr("HDA_INIT.LOG"),0
 endif
 	; fill in the data that the caller gives us
 	mov	[wPort],bx
@@ -701,7 +707,7 @@ endif
 	mov	[node],al
 	mov	al,WTYPE_PIN
 	mov	si,7		; just look for 48 kHz since we've no more specific instructions for now...
-	call	find_dac_node
+	call	find_dac_start
 	mov	[dacnode],al
 	mov	[ratebitmap],si
 	test	al,al
@@ -714,6 +720,26 @@ endif
 
 @@:
 	mov	[node],al
+	mov	ax,0F00h	; get parameter
+	mov	edx,9		; widget type
+	call	send_cmd_wait
+	shr	eax,20
+	and	al,0Fh
+	cmp	al,WTYPE_AUDIOOUT
+	je	@F
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("BUGBUG: node ")
+	movzx	ax,[node]
+	movzx	bx,al
+	invoke	printbinword,ax
+	invoke	printtolog, CStr(" is not a DAC (its type is ")
+	invoke	printbinword,bx
+	invoke	printtolog, CStr(")",0Dh,0Ah)
+endif
+	jmp	@@init_failed
+
+@@:
 if	?DEBUGLOG
 	invoke	printtolog, CStr("DAC found, unmuting...",0Dh,0Ah)
 endif
@@ -894,7 +920,7 @@ drv_init	endp
 ; Returns nothing
 drv_uninit	proc near
 if	?DEBUGLOG
-	invoke	openlog, CStr("HDA_FINI.LOG")
+	invoke	openlog, CStr("HDA_FINI.LOG"),0
 	invoke	printtolog, CStr("masking interrupts...",0Dh,0Ah)
 endif
 	call	mask_irq
@@ -1035,7 +1061,7 @@ drv_uninit	endp
 ; Returns nothing
 drv_setrate	proc near
 if	?DEBUGLOG
-	invoke	openlog, CStr("HDA_RATE.LOG")
+	invoke	openlog, CStr("HDA_RATE.LOG"),0
 	invoke	printtolog, CStr("checking if driver is initialized...",0Dh,0Ah)
 endif
 	bt	[statusword],0
@@ -1043,14 +1069,23 @@ endif
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("finding rate index...",0Dh,0Ah)
+	invoke	printtolog, CStr("Bits in requested rate: ")
+	invoke	printbinword,bx
+	invoke	printtolog, CStr(0Dh,0Ah)
 endif
 	mov	ax,bx
+	.if	ax == 10000	; Rayman 1 uses this non-standard rate...
+	  mov	ax,11025	; So sneakily speed it up to this standard one!
+	.endif			; (Rayman Designer uses 11025 - so that's why I always thought Rayman 1's sounds were lower-pitched...)
 	call	get_rate_idx
 	cmp	ax,-1
 	je	@@failed
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("checking if DAC supports this rate...",0Dh,0Ah)
+	invoke	printtolog, CStr("Bits in rate support bitmap: ")
+	invoke	printbinword,[ratebitmap]
+	invoke	printtolog, CStr(0Dh,0Ah)
 endif
 	bt	[ratebitmap],ax
 	movzx	ebx,ax
@@ -1063,12 +1098,24 @@ endif
 	mov	al,[pinnode]
 	mov	[node],al
 	mov	al,WTYPE_PIN
-	call	find_dac_node
+	call	find_dac_start
 	test	al,al
-	jz	@@failed
+	jnz	@@dacfound
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("no DAC found, setting up software conversion...",0Dh,0Ah)
+endif
+	mov	bh,FormatHiBytes[ebx-1]
+	mov	bl,bh
+	and	bl,7		; three lowest bits = divider
+	inc	bl		; convert zero to one, etc.
+	mov	[soft_divider],bl
+	and	bh,not 7	; nullify the divider
+	jmp	@@setformatlobyte
+
+@@dacfound:
 	mov	[dacnode],al
 	mov	[ratebitmap],si
-
 	mov	[node],al
 if	?DEBUGLOG
 	invoke	printtolog, CStr("DAC found, unmuting...",0Dh,0Ah)
@@ -1084,6 +1131,7 @@ if	?DEBUGLOG
 	invoke	printtolog, CStr("rate supported, configuring stream...",0Dh,0Ah)
 endif
 	mov	bh,FormatHiBytes[ebx-1]
+@@setformatlobyte:
 	mov	bl,FORMATLOBYTE
 
 	push	es
@@ -1113,7 +1161,7 @@ drv_setrate	endp
 ; Returns nothing
 drv_setaction	proc near
 if	?DEBUGLOG
-	invoke	openlog, CStr("HDA_ACT.LOG")
+	invoke	openlog, CStr("HDA_ACT.LOG"),0
 endif
 	cmp	bx,8	; TRA1 = reading from memory (an ISA DMA mode - see osdev wiki)
 	je	@F
@@ -1135,7 +1183,8 @@ drv_setaction	endp
 ; Returns nothing
 drv_start	proc near
 if	?DEBUGLOG
-	invoke	openlog, CStr("HDA_STRT.LOG")
+	invoke	openlog, CStr("HDA_STRT.LOG"),0
+	;call	logtostderr
 	invoke	printtolog, CStr("checking if driver is initialized...",0Dh,0Ah)
 endif
 	bt	[statusword],0
@@ -1161,6 +1210,19 @@ endif
 	mov	[dwMainBufPhys],edx
 	mov	[dwMainBufSize],ecx
 
+	cmp	[soft_divider],1
+	jna	@F
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("software divider in operation, creating new buffer...",0Dh,0Ah)
+endif
+	mov	eax,ecx
+	movzx	ecx,[soft_divider]
+	mul	ecx		; destroys EDX, but alloc_dma_buf sets it anyway
+	mov	ecx,eax
+	jmp	@@createauxbuf
+
+@@:
 	test	edx,7Fh		; 128-byte aligned?
 	jz	@F
 
@@ -1168,6 +1230,7 @@ if	?DEBUGLOG
 	invoke	printtolog, CStr("buffer not 128-byte aligned, creating new one...",0Dh,0Ah)
 endif
 	mov	eax,ecx
+@@createauxbuf:
 	call	alloc_dma_buf
 	jc	@@skip
 	mov	[dwAuxSelHdl],eax
@@ -1186,11 +1249,11 @@ endif
 	mov	dword ptr gs:[esi].BDLENTRY.qwAddr,edx
 	mov	dword ptr gs:[esi+4].BDLENTRY.qwAddr,eax
 	mov	gs:[esi].BDLENTRY.dwLen,ecx
-	mov	gs:[esi+4].BDLENTRY.dwFlgs,eax			; no IOC (for now)
+	mov	gs:[esi].BDLENTRY.dwFlgs,eax			; no IOC (for now)
 	mov	dword ptr gs:[esi+size BDLENTRY].BDLENTRY.qwAddr,edx
 	mov	dword ptr gs:[esi+size BDLENTRY+4].BDLENTRY.qwAddr,eax
 	mov	gs:[esi+size BDLENTRY].BDLENTRY.dwLen,ecx
-	mov	gs:[esi+size BDLENTRY+4].BDLENTRY.dwFlgs,eax	; no IOC (for now)
+	mov	gs:[esi+size BDLENTRY].BDLENTRY.dwFlgs,eax	; no IOC (for now)
 	pop	gs
 
 if	?DEBUGLOG
@@ -1235,7 +1298,7 @@ drv_start	endp
 ; Returns nothing
 drv_stop	proc near
 if	?DEBUGLOG
-	invoke	openlog, CStr("HDA_STOP.LOG")
+	invoke	openlog, CStr("HDA_STOP.LOG"),0
 	invoke	printtolog, CStr("checking if driver is initialized...",0Dh,0Ah)
 endif
 	bt	[statusword],0
@@ -1251,6 +1314,9 @@ endif
 	mov	edi,[firststreamoff]
 if	?DEBUGLOG
 	invoke	printtolog, CStr("checking if sound is playing...",0Dh,0Ah)
+	invoke	printtolog, CStr("Bits in wCtl: ")
+	invoke	printbinword,es:[edi].STREAM.wCtl
+	invoke	printtolog, CStr(0Dh,0Ah)
 endif
 	btr	es:[edi].STREAM.wCtl,1	; RUN bit
 	jnc	@@skip
@@ -1261,6 +1327,9 @@ endif
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("Waiting for DMA engine to stop...",0Dh,0Ah)
+	invoke	printtolog, CStr("Bits in wCtl: ")
+	invoke	printbinword,es:[edi].STREAM.wCtl
+	invoke	printtolog, CStr(0Dh,0Ah)
 endif
 	mov	ecx,1000h
 @@:
@@ -1269,25 +1338,31 @@ endif
 	loopnz	@B
 
 if	?DEBUGLOG
+	invoke	printtolog, CStr("Bits in wCtl: ")
+	invoke	printbinword,es:[edi].STREAM.wCtl
+	invoke	printtolog, CStr(0Dh,0Ah)
 	invoke	printtolog, CStr("Saving format and resetting stream...",0Dh,0Ah)
 endif
 	push	es:[edi].STREAM.wFormat
 
 	mov	ecx,1000h
-	bts	es:[esi].STREAM.wCtl,0	; SRST bit
+	bts	es:[edi].STREAM.wCtl,0	; SRST bit
 @@:
 	call	wait_timerch2
-	test	es:[esi].STREAM.wCtl,1
+	test	es:[edi].STREAM.wCtl,1
 	loopz	@B
 	mov	ecx,1000h
-	btr	es:[esi].STREAM.wCtl,0	; SRST bit
+	btr	es:[edi].STREAM.wCtl,0	; SRST bit
 @@:
 	call	wait_timerch2
-	test	es:[esi].STREAM.wCtl,1
+	test	es:[edi].STREAM.wCtl,1
 	loopnz	@B
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("Stream reset, restoring format",0Dh,0Ah)
+	invoke	printtolog, CStr("Bits in wCtl: ")
+	invoke	printbinword,es:[edi].STREAM.wCtl
+	invoke	printtolog, CStr(0Dh,0Ah)
 endif
 	pop	es:[edi].STREAM.wFormat
 
@@ -1319,7 +1394,7 @@ drv_stop	endp
 ; Returns nothing
 drv_pause	proc near
 if	?DEBUGLOG
-	invoke	openlog, CStr("HDAPAUSE.LOG")
+	invoke	openlog, CStr("HDAPAUSE.LOG"),0
 	invoke	printtolog, CStr("checking if driver is initialized...",0Dh,0Ah)
 endif
 	bt	[statusword],0
@@ -1364,7 +1439,7 @@ drv_pause	endp
 ; Returns nothing
 drv_resume	proc near
 if	?DEBUGLOG
-	invoke	openlog, CStr("HDA_RSM.LOG")
+	invoke	openlog, CStr("HDA_RSM.LOG"),0
 	invoke	printtolog, CStr("checking if driver is initialized...",0Dh,0Ah)
 endif
 	bt	[statusword],0
@@ -1409,7 +1484,7 @@ drv_resume	endp
 ; Returns pointer to capabilities structure in EDX
 drv_capabilities proc near
 if	?DEBUGLOG
-	invoke	openlog, CStr("HDA_CAPS.LOG")
+	invoke	openlog, CStr("HDA_CAPS.LOG"),0
 	invoke	printtolog, CStr("capabilities requested, filling 'port' list...",0Dh,0Ah)
 endif
 	call	fill_portlist
@@ -1445,10 +1520,10 @@ drv_getcallfn	endp
 ; ------------------------------------------------------------------------------ ;
 
 ; Takes file handle in EBX, zero-terminated string in EDX
-printtofile	proc near	uses eax ecx es edi
+printtofile	proc near	uses eax ecx es ds edi
 	xor	ecx,ecx
 	dec	ecx
-	push	ds
+	push	cs
 	pop	es
 	mov	edi,edx
 	xor	eax,eax
@@ -1456,6 +1531,8 @@ printtofile	proc near	uses eax ecx es edi
 	not	ecx		; ECX now has the string length plus one
 	dec	ecx
 
+	push	cs
+	pop	ds
 	mov	eax,4000h	; WRITE
 	int	21h
 	ret
@@ -1492,11 +1569,7 @@ unmute		proc near	uses eax edx
 unmute		endp
 
 ; Take a sample rate in AX, and return its index in the rate list in AX, or -1 if absent.
-get_rate_idx	proc near
-	push	ecx
-	push	edi
-	push	es
-
+get_rate_idx	proc near	uses ecx edi es
 	push	ds
 	pop	es
 
@@ -1514,19 +1587,46 @@ get_rate_idx	proc near
 	shr	ax,1
 
 @@:
-	pop	es
-	pop	edi
-	pop	ecx
+	ret
 get_rate_idx	endp
 
 ; Find an audio output converter node attached to the pin widget selected by [node],
 ; with type given by AL, and return the found node in AL.
 ; Index of desired rate can be given in SI, and supported rate bitmap is returned in SI.
+nodes_seen_bmap	dd 8 dup (?)
+find_dac_start	proc near
+	; clear the bitmap of nodes we've seen
+	push	es
+	push	edi
+	push	ecx
+	push	eax
+	mov	ecx,ds
+	mov	edi,offset nodes_seen_bmap
+	mov	es,ecx
+	mov	ecx,8
+	xor	eax,eax
+	rep	stosd
+	pop	eax
+	pop	ecx
+	pop	edi
+	pop	es
+
+	call	find_dac_node
+	ret
+find_dac_start	endp
 find_dac_node	proc near	uses ebx ecx edx edi
 	; Local variables:
 	; BL = current node (potential return value)
 	; BH = current node's type (potential argument to recursive call)
 	push	eax		; save the node type
+
+	; establish that we've seen the currently-selected node
+	movzx	eax,[node]
+	mov	edi,eax
+	and	eax,1Fh
+	shr	edi,5
+	bts	[nodes_seen_bmap+edi*4],eax
+	jc	@@found_bupkis	; if we've already seen it, don't run again
 
 	mov	ax,0F00h	; get parameter
 	mov	edx,0Eh		; number of connections
@@ -1554,7 +1654,7 @@ find_dac_node	proc near	uses ebx ecx edx edi
 	cmp	al,WTYPE_AUDIOOUT
 	mov	bh,al
 	pop	edx
-	jne	@F
+	jne	@@not_dac
 
 	push	edx
 	mov	ax,0F00h	; get parameter
@@ -1562,36 +1662,37 @@ find_dac_node	proc near	uses ebx ecx edx edi
 	call	send_cmd_wait
 	bt	eax,17		; supports 16-bit format?
 	pop	edx
-	jnc	@F
+	jnc	@@not_suitable_dac
 
 	and	si,7		; only look for rates up to number 7 (i.e. 48 kHz)
 	dec	si		; R1 <=> Bit 0, etc.
 	bt	ax,si		; supports desired rate?
 	lea	esi,[esi+1]	; restore value without affecting flags
-	jnc	@F
+	jnc	@@not_suitable_dac
 
 	mov	si,ax
+	mov	al,bl
 	jmp	@@found_one
 
-@@:
+@@not_dac:
 	mov	al,bh
 	call	find_dac_node	; recurse
 	test	al,al
 	jnz	@@found_one
 
+@@not_suitable_dac:
 	mov	eax,edi
 	shr	eax,8
 	inc	edx
 	pop	[wParam]
 	loop	@B
 
-	; we found bupkis...
+@@found_bupkis:
 	xor	al,al
 	lea	esp,[esp+4]	; get rid of the node type on the stack
 	jmp	@@retpoint
 
 @@found_one:
-	mov	al,bl
 	pop	[wParam]	; restore current node
 
 	xchg	[esp],eax	; save the node we've found, and pull up our node's type
@@ -1745,7 +1846,7 @@ alloc_dma_buf	proc near
 	shr	ebx,10h			; get physical base into BX:CX
 	mov	edi,[ebp].RMCS.rEBP
 	mov	esi,edi
-	shr	esi,10			; get desired buffer size into SI:DI
+	shr	esi,10h			; get desired buffer size into SI:DI
 	call	alloc_phys_sel
 
 	mov	ebx,[ebp].RMCS.rEBX	; restore EBX
@@ -1989,6 +2090,15 @@ alloc_phys_sel	proc near
 	; BX:CX = base physical address
 	; SI:DI = size
 	; returns selector in AX pointing to the physical address in BX:CX
+if	?DEBUGLOG
+	invoke	printtolog, CStr("alloc_phys_sel: Bits in base address: ")
+	invoke	printbinword,bx
+	invoke	printbinword,cx
+	invoke	printtolog, CStr(0Dh,0Ah,"alloc_phys_sel: Bits in size: ")
+	invoke	printbinword,si
+	invoke	printbinword,di
+	invoke	printtolog, CStr(0Dh,0Ah)
+endif
 	call	map_physmem
 	jc	@F
 if	?DEBUGLOG
@@ -2242,12 +2352,11 @@ drv_reset	proc near
 	cmp	[crst_count],?CRST_MAX
 	jb	@F
 	
-	mov	ax,3		; switch to VGA text mode
-	int	10h
+	; This may not even show up on the terminal if a game is being played!
 	invoke	printstderr, CStr(33o,"[31m","FATAL: Too many HDA controller resets!",33o,"[37m",0Dh,0Ah)
-	call	send_eoi	; avoid annoying the rest of the OS...
-	mov	ax,4CFFh	; exit with -1 code (pull down the application)
-	int	21h
+	popad
+	lea	esp,[esp+8]
+	ret
 
 @@:	
 	mov	bx,[wPort]
@@ -2292,12 +2401,11 @@ stream_reset	proc near
 	cmp	[srst_count],?SRST_MAX
 	jb	@F
 	
-	mov	ax,3		; switch to VGA text mode
-	int	10h
+	; This may not even show up on the terminal if a game is being played!
 	invoke	printstderr, CStr(33o,"[31m","FATAL: Too many HDA stream resets!",33o,"[37m",0Dh,0Ah)
-	call	send_eoi	; avoid annoying the rest of the OS...
-	mov	ax,4CFFh	; exit with -1 code (pull down the application)
-	int	21h
+	popad
+	lea	esp,[esp+8]
+	ret
 
 @@:	
 	xchg	edi,[esp+4]
@@ -2443,7 +2551,7 @@ timer_handler	proc far
 	mov	ds,cs:[lpPortList_seg]
 	assume	ds:_TEXT
 	bts	[statusword],3
-	jc	@@skip
+	jc	@@donotenter
 	bt	[statusword],0
 	jnc	@@skip
 
@@ -2477,9 +2585,10 @@ timer_handler	proc far
 	push	esi
 
 	lgs	esi,[lpAuxBufFilled]
+	mov	[dwLastFillEAX],eax
 	mov	ecx,eax
 	sub	ecx,esi
-	jnb	@F
+	jnb	@@nowrap
 
 	mov	ecx,es:[edi].STREAM.dwBufLen
 	sub	ecx,esi		; get the distance to the end of the buffer
@@ -2489,37 +2598,92 @@ timer_handler	proc far
 
 	push	fs
 	pop	ds		; DS points to main buffer
+	assume	ds:nothing	; Avoid headscratchers!
 	push	gs
 	pop	es		; ES points to aux buffer
 	mov	edi,esi
-	rep	movsd		; copy what's been filled in to the aux buffer
+
+	push	edx
+	push	eax
+	mov	eax,esi
+	xor	edx,edx
+	movzx	esi,cs:[soft_divider]
+	div	esi
+	mov	esi,eax
+
+	mov	edx,ecx
+@@:
+	movzx	ecx,cs:[soft_divider]
+	lodsd
+	sub	edx,ecx
+	rep	stosd		; copy what's been filled in to the aux buffer
+	ja	@B		; flags set by subtraction above
+	pop	eax
+	pop	edx
 
 	pop	ds
+	assume	ds:_TEXT
 	pop	es
 
 	xor	esi,esi		; back to start of the buffer
 	mov	ecx,eax
 
-@@:
+@@nowrap:
 	shr	ecx,2		; convert to dwords
 	push	es
 	push	ds
 
 	push	fs
 	pop	ds		; DS points to main buffer
+	assume	ds:nothing	; Avoid headscratchers!
 	push	gs
 	pop	es		; ES points to aux buffer
 	mov	edi,esi
-	rep	movsd		; copy what's been filled in to the aux buffer
+	push	edx
+	push	eax
+	mov	eax,esi
+	xor	edx,edx
+	movzx	esi,cs:[soft_divider]
+	div	esi
+	mov	esi,eax
+
+	mov	edx,ecx
+@@:
+	movzx	ecx,cs:[soft_divider]
+	lodsd
+	sub	edx,ecx
+	rep	stosd		; copy what's been filled in to the aux buffer
+	ja	@B		; flags set by subtraction above
+	pop	eax
+	pop	edx
 
 	pop	ds
+	assume	ds:_TEXT
 	pop	es
 
 	pop	esi
 	pop	gs
 
+	; convert buffer positions
+	movzx	ecx,[soft_divider]
+
+	push	edx
+	xor	edx,edx
+	div	ecx
+	pop	edx
+
+	push	eax
+	mov	eax,edx
+	xor	edx,edx
+	div	ecx
+	mov	edx,eax
+	pop	eax
+
+	jmp	@F		; previous position already set above
+
 @@noaux:
 	mov	[dwLastFillEAX],eax
+@@:
 	mov	edi,esi
 	push	fs
 	pop	es
@@ -2529,6 +2693,7 @@ timer_handler	proc far
 	pop	fs
 @@skip:
 	btr	[statusword],3
+@@donotenter:
 	pop	ds
 	assume	ds:nothing
 	ret
