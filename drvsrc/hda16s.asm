@@ -168,6 +168,10 @@ oldIRQ_seg	dw 0
 irqvec		db 0		; the actual interrupt vector corresponding to our IRQ
 oldpciirq	db 0		; the interrupt line of the controller before we set it
 
+oldDEhandler	label	fword
+oldDE_off	dd 0
+oldDE_seg	dw 0
+
 ; Bit 0 = successfully initialized
 ; Bit 1 = timer entered
 ; Bit 2 = IRQ entered
@@ -319,6 +323,27 @@ printbinword	proc near stdcall	uses es edi ecx ebx eax	wOut:word
 	popf
 	ret
 printbinword	endp
+
+printnodetype	proc near stdcall	bNodeType:byte
+	.if	[bNodeType] == WTYPE_AUDIOOUT
+	 invoke	printtolog, CStr("DAC")
+	.elseif	[bNodeType] == WTYPE_AUDIOIN
+	 invoke	printtolog, CStr("ADC")
+	.elseif	[bNodeType] == WTYPE_MIXER
+	 invoke	printtolog, CStr("mixer")
+	.elseif	[bNodeType] == WTYPE_SELECTOR
+	 invoke	printtolog, CStr("selector")
+	.elseif	[bNodeType] == WTYPE_PIN
+	 invoke	printtolog, CStr("pin")
+	.elseif	[bNodeType] == WTYPE_POWER
+	 invoke	printtolog, CStr("power widget")
+	.elseif	[bNodeType] == WTYPE_VOLKNOB
+	 invoke	printtolog, CStr("volume widget")
+	.elseif	[bNodeType] == WTYPE_BEEPGEN
+	 invoke	printtolog, CStr("beep generator")
+	.endif
+	ret
+printnodetype	endp
 
 closelog	proc near	uses eax ebx
 	mov	ah,3Eh		; CLOSE
@@ -729,19 +754,19 @@ endif
 	je	@F
 
 if	?DEBUGLOG
-	invoke	printtolog, CStr("BUGBUG: node ")
-	movzx	ax,[node]
-	movzx	bx,al
-	invoke	printbinword,ax
-	invoke	printtolog, CStr(" is not a DAC (its type is ")
-	invoke	printbinword,bx
+	invoke	printtolog, CStr("BUGBUG: codec/node ")
+	invoke	printbinword,[wParam]
+	invoke	printtolog, CStr(" is not a DAC (it is a ")
+	invoke	printnodetype,al
 	invoke	printtolog, CStr(")",0Dh,0Ah)
 endif
 	jmp	@@init_failed
 
 @@:
 if	?DEBUGLOG
-	invoke	printtolog, CStr("DAC found, unmuting...",0Dh,0Ah)
+	invoke	printtolog, CStr("DAC found at codec/node ")
+	invoke	printbinword,[wParam]
+	invoke	printtolog, CStr(", unmuting...",0Dh,0Ah)
 endif
 	xor	eax,eax		; only the output amplifier
 	call	unmute
@@ -751,16 +776,13 @@ endif
 
 	mov	al,[pinnode]	; EAX != 0, so unmute both input and output amplifiers
 	mov	[node],al
-	call	unmute
-	mov	ax,0705h	; set power state
-	xor	edx,edx		; D0
-	call	send_cmd_wait
+	; no need to unmute pin because it already happened during the search
 	mov	ax,0707h	; set pin widget control
-	mov	eax,40h		; only out enable
+	mov	edx,40h		; only out enable
 	call	send_cmd_wait
 
 if	?DEBUGLOG
-	invoke	printtolog, CStr("DAC and pin unmuted, now resetting output streams",0Dh,0Ah)
+	invoke	printtolog, CStr("DAC unmuted, now resetting output streams",0Dh,0Ah)
 endif
 
 	movzx	eax,es:[edi].HDAREGS.gcap
@@ -948,6 +970,7 @@ endif
 	   je	@F
 
 	   mov	ah,25h		; set interrupt vector
+	   mov	al,[irqvec]
 	   push	ds
 	   lds	edx,[oldIRQhandler]
 	   int	21h
@@ -1083,9 +1106,11 @@ endif
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("checking if DAC supports this rate...",0Dh,0Ah)
-	invoke	printtolog, CStr("Bits in rate support bitmap: ")
+	invoke	printtolog, CStr("[bits in rate support bitmap: ")
 	invoke	printbinword,[ratebitmap]
-	invoke	printtolog, CStr(0Dh,0Ah)
+	invoke	printtolog, CStr("; bits in rate index: ")
+	invoke	printbinword,ax
+	invoke	printtolog, CStr("]",0Dh,0Ah)
 endif
 	bt	[ratebitmap],ax
 	movzx	ebx,ax
@@ -1118,7 +1143,9 @@ endif
 	mov	[ratebitmap],si
 	mov	[node],al
 if	?DEBUGLOG
-	invoke	printtolog, CStr("DAC found, unmuting...",0Dh,0Ah)
+	invoke	printtolog, CStr("DAC found at codec/node ")
+	invoke	printbinword,[wParam]
+	invoke	printtolog, CStr(", unmuting...",0Dh,0Ah)
 endif
 	xor	eax,eax		; only the output amplifier
 	call	unmute
@@ -1133,6 +1160,10 @@ endif
 	mov	bh,FormatHiBytes[ebx-1]
 @@setformatlobyte:
 	mov	bl,FORMATLOBYTE
+if	?DEBUGLOG
+	invoke	printbinword,bx
+	invoke	printtolog, CStr(" is the new stream format word",0Dh,0Ah)
+endif
 
 	push	es
 	call	get_hdareg_ptr
@@ -1211,15 +1242,42 @@ endif
 	mov	[dwMainBufSize],ecx
 
 	cmp	[soft_divider],1
-	jna	@F
+	;jna	@F
+	jmp	@F
 
 if	?DEBUGLOG
-	invoke	printtolog, CStr("software divider in operation, creating new buffer...",0Dh,0Ah)
+	invoke	printtolog, CStr("software divider in operation (")
+	movzx	ax,[soft_divider]
+	invoke	printbinword,ax
+	invoke	printtolog, CStr("), creating new buffer...",0Dh,0Ah)
 endif
 	mov	eax,ecx
 	movzx	ecx,[soft_divider]
 	mul	ecx		; destroys EDX, but alloc_dma_buf sets it anyway
 	mov	ecx,eax
+
+	push	es
+	push	ebx
+	mov	ax,3500h	; get interrupt vector 0 (#DE)
+	int	21h
+	mov	[oldDE_off],ebx
+	mov	[oldDE_seg],es
+	pop	ebx
+	pop	es
+
+	mov	ax,2500h	; set interrupt vector 0 (#DE)
+	push	ds
+	push	edx
+	push	cs
+	pop	ds
+	mov	edx,offset div0_handler
+	int	21h
+	pop	edx
+	pop	ds
+if	?DEBUGLOG
+	invoke	printtolog, CStr("divide-by-zero handler set",0Dh,0Ah)
+endif
+
 	jmp	@@createauxbuf
 
 @@:
@@ -1375,9 +1433,28 @@ if	?DEBUGLOG
 endif
 	xchg	eax,[dwAuxSelHdl]
 	call	free_dma_buf
+
 if	?DEBUGLOG
-	invoke	printtolog, CStr("Done",0Dh,0Ah)
+	invoke	printtolog, CStr("Checking if divide-by-zero handler is set...",0Dh,0Ah)
 endif
+	cmp	[oldDE_seg],0
+	jz	@@skip
+
+if	?DEBUGLOG
+	invoke printtolog, CStr("yes, resetting it...",0Dh,0Ah)
+endif
+	mov	ax,2500h	; set interrupt vector 0 (#DE)
+	push	ds
+	lds	edx,[oldDEhandler]
+	int	21h
+	pop	ds
+if	?DEBUGLOG
+	invoke printtolog, CStr("#DE handler reset",0Dh,0Ah)
+endif
+
+	xor	eax,eax
+	mov	[oldDE_seg],ax
+	mov	[oldDE_off],eax
 
 @@skip:
 	pop	es
@@ -1547,9 +1624,15 @@ unmute		proc near	uses eax edx
 	mov	ax,0F00h	; get parameter
 	mov	edx,0Dh		; input amplifier capabilities
 	call	send_cmd_wait
-	and	eax,01111111b	; get the "offset" gain value (bits 0-6)
+	movzx	edx,ah	; get the "numsteps" (i.e. max) gain value (bits 8-14)
+if	?DEBUGLOG
+	invoke	printtolog,CStr("input amp max gain of codec/node ")
+	invoke	printbinword,[wParam]
+	invoke	printtolog,CStr(" is: ")
+	invoke	printbinword,dx
+	invoke	printtolog,CStr(0Dh,0Ah)
+endif
 
-	mov	edx,eax
 	mov	ax,3		; set amplifier
 	mov	dh,70h		; bits 12-14 - set input amp, left and right
 	call	send_cmd_wait
@@ -1558,9 +1641,15 @@ unmute		proc near	uses eax edx
 	mov	ax,0F00h	; get parameter
 	mov	edx,12h		; output amplifier capabilities
 	call	send_cmd_wait
-	and	eax,01111111b	; get the "offset" gain value (bits 0-6)
+	movzx	edx,ah	; get the "numsteps" (i.e. max) gain value (bits 8-14)
+if	?DEBUGLOG
+	invoke	printtolog,CStr("output amp max gain of codec/node ")
+	invoke	printbinword,[wParam]
+	invoke	printtolog,CStr(" is: ")
+	invoke	printbinword,dx
+	invoke	printtolog,CStr(0Dh,0Ah)
+endif
 
-	mov	edx,eax
 	mov	ax,3		; set amplifier
 	mov	dh,0B0h		; bits 12-13/15 - set output amp, left and right
 	call	send_cmd_wait
@@ -1578,11 +1667,11 @@ get_rate_idx	proc near	uses ecx edi es
 	repne	scasw
 	sub	edi,2
 	xor	eax,eax
-	not	eax		; EAX = -1
-	scasw			; ES:[EDI] == -1?
+	not	eax	; EAX = -1
+	scasw		; ES:[EDI] == -1? (This instruction also increments the index, which we want since we count from 1!)
 	je @F
 
-	sub	edi,offset RateList + 2 + 2	; +2 since we scasw-ed, another +2 since we're counting from 1
+	sub	edi,offset RateList
 	mov	ax,di
 	shr	ax,1
 
@@ -1696,6 +1785,13 @@ find_dac_node	proc near	uses ebx ecx edx edi
 	pop	[wParam]	; restore current node
 
 	xchg	[esp],eax	; save the node we've found, and pull up our node's type
+if	?DEBUGLOG
+	invoke	printtolog,CStr("unmuting codec/node ")
+	invoke	printbinword,[wParam]
+	invoke	printtolog,CStr(" of type ")
+	invoke	printnodetype,al
+	invoke	printtolog,CStr("...",0Dh,0Ah)
+endif
 	cmp	al,WTYPE_MIXER
 	je	@F
 
@@ -2594,11 +2690,7 @@ timer_handler	proc far
 	sub	ecx,esi		; get the distance to the end of the buffer
 	shr	ecx,2		; convert to dwords
 	push	es
-	push	ds
 
-	push	fs
-	pop	ds		; DS points to main buffer
-	assume	ds:nothing	; Avoid headscratchers!
 	push	gs
 	pop	es		; ES points to aux buffer
 	mov	edi,esi
@@ -2607,22 +2699,19 @@ timer_handler	proc far
 	push	eax
 	mov	eax,esi
 	xor	edx,edx
-	movzx	esi,cs:[soft_divider]
+	movzx	esi,[soft_divider]
 	div	esi
 	mov	esi,eax
 
 	mov	edx,ecx
 @@:
-	movzx	ecx,cs:[soft_divider]
-	lodsd
+	movzx	ecx,[soft_divider]
+	lodsd	fs:[esi]
 	sub	edx,ecx
-	rep	stosd		; copy what's been filled in to the aux buffer
+	rep	stosd		; copy what's been filled in, to the aux buffer
 	ja	@B		; flags set by subtraction above
 	pop	eax
 	pop	edx
-
-	pop	ds
-	assume	ds:_TEXT
 	pop	es
 
 	xor	esi,esi		; back to start of the buffer
@@ -2633,9 +2722,6 @@ timer_handler	proc far
 	push	es
 	push	ds
 
-	push	fs
-	pop	ds		; DS points to main buffer
-	assume	ds:nothing	; Avoid headscratchers!
 	push	gs
 	pop	es		; ES points to aux buffer
 	mov	edi,esi
@@ -2643,22 +2729,19 @@ timer_handler	proc far
 	push	eax
 	mov	eax,esi
 	xor	edx,edx
-	movzx	esi,cs:[soft_divider]
+	movzx	esi,[soft_divider]
 	div	esi
 	mov	esi,eax
 
 	mov	edx,ecx
 @@:
-	movzx	ecx,cs:[soft_divider]
-	lodsd
+	movzx	ecx,[soft_divider]
+	lodsd	fs:[esi]
 	sub	edx,ecx
 	rep	stosd		; copy what's been filled in to the aux buffer
 	ja	@B		; flags set by subtraction above
 	pop	eax
 	pop	edx
-
-	pop	ds
-	assume	ds:_TEXT
 	pop	es
 
 	pop	esi
@@ -2698,6 +2781,46 @@ timer_handler	proc far
 	assume	ds:nothing
 	ret
 timer_handler	endp
+
+; handle division errors that pop up,
+; at least if DPMI host doesn't have proper exception handling
+div0_handler	proc
+	mov	ds,cs:[lpPortList_seg]
+	assume	ds:_TEXT
+
+	mov	ax,3		; switch to VGA text mode
+	int	10h
+	invoke	printstderr, CStr(33o,"[31m","FATAL: Division error (")
+	mov	eax,cs
+	.if	eax != [esp+4]
+	 invoke	printstderr, CStr("not ")
+	.endif
+	invoke	printstderr, CStr("within HD Audio Driver). Quitting...",33o,"[37m",0Dh,0Ah)
+
+	mov	ax,4CFFh	; exit with 255 status code
+	sti
+	int	21h
+div0_handler	endp
+
+; handle protection errors that pop up,
+; at least if DPMI host doesn't have proper exception handling
+gp_handler	proc
+	mov	ds,cs:[lpPortList_seg]
+	assume	ds:_TEXT
+
+	mov	ax,3		; switch to VGA text mode
+	int	10h
+	invoke	printstderr, CStr(33o,"[31m","FATAL: Protection error (")
+	mov	eax,cs
+	.if	eax != [esp+8]	; since [esp] == error code
+	 invoke	printstderr, CStr("not ")
+	.endif
+	invoke	printstderr, CStr("within HD Audio Driver). Quitting...",33o,"[37m",0Dh,0Ah)
+
+	mov	ax,4CFFh	; exit with 255 status code
+	sti
+	int	21h
+gp_handler	endp
 
 _TEXT	ends
 
