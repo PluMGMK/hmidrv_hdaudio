@@ -168,10 +168,6 @@ oldIRQ_seg	dw 0
 irqvec		db 0		; the actual interrupt vector corresponding to our IRQ
 oldpciirq	db 0		; the interrupt line of the controller before we set it
 
-oldDEhandler	label	fword
-oldDE_off	dd 0
-oldDE_seg	dw 0
-
 ; Bit 0 = successfully initialized
 ; Bit 1 = timer entered
 ; Bit 2 = IRQ entered
@@ -362,6 +358,39 @@ closelog	proc near	uses eax ebx
 	ret
 closelog	endp
 
+announcecopy	proc near
+	invoke	printtolog, CStr("copying ")
+	ror	edx,10h
+	invoke	printbinword,dx
+	ror	edx,10h
+	invoke	printbinword,dx
+
+	invoke	printtolog, CStr("b dwords;",0Dh,0Ah,"    from: ")
+	ror	esi,10h
+	invoke	printbinword,si
+	ror	esi,10h
+	invoke	printbinword,si
+
+	invoke	printtolog, CStr("b (main buffer)",0Dh,0Ah,"      to: ")
+	ror	edi,10h
+	invoke	printbinword,di
+	ror	edi,10h
+	invoke	printbinword,di
+	invoke	printtolog, CStr("b (aux buffer);",0Dh,0Ah,"   limit: ")
+
+	push	edi
+	mov	edi,es
+	lsl	edi,edi
+	ror	edi,10h
+	invoke	printbinword,di
+	ror	edi,10h
+	invoke	printbinword,di
+	invoke	printtolog, CStr("b (aux buffer)",0Dh,0Ah)
+	pop	edi
+
+	ret
+announcecopy	endp
+
 endif
 
 ; ------------------------------------------------------- ;
@@ -420,10 +449,10 @@ endif
 
 @@hda_running:
 if	?DEBUGLOG
-	invoke	printtolog, CStr("Bits in GCTL register: ")
+	invoke	printtolog, CStr("GCTL == ")
 	invoke	printbinword,word ptr es:[edi+2].HDAREGS.gctl
 	invoke	printbinword,word ptr es:[edi].HDAREGS.gctl
-	invoke	printtolog, CStr(0Dh,0Ah)
+	invoke	printtolog, CStr("b",0Dh,0Ah)
 endif
 	; make sure interrupts are off until we set up IRQ...
 	xor	eax,eax
@@ -487,9 +516,9 @@ endif
 	mov	dword ptr es:[edi].HDAREGS.rirbbase+4,0
 
 if	?DEBUGLOG
-	invoke	printtolog, CStr("Bits in CORB write pointer: ")
+	invoke	printtolog, CStr("CORB write pointer == ")
 	invoke	printbinword, es:[edi].HDAREGS.corbwp
-	invoke	printtolog, CStr(0Dh,0Ah)
+	invoke	printtolog, CStr("b",0Dh,0Ah)
 endif
 	mov	es:[edi].HDAREGS.corbwp,0	; reset CORB write pointer
 	mov	es:[edi].HDAREGS.rirbwp,8000h	; reset RIRB write pointer
@@ -774,7 +803,7 @@ endif
 	xor	edx,edx		; D0
 	call	send_cmd_wait
 
-	mov	al,[pinnode]	; EAX != 0, so unmute both input and output amplifiers
+	mov	al,[pinnode]
 	mov	[node],al
 	; no need to unmute pin because it already happened during the search
 	mov	ax,0707h	; set pin widget control
@@ -782,7 +811,7 @@ endif
 	call	send_cmd_wait
 
 if	?DEBUGLOG
-	invoke	printtolog, CStr("DAC unmuted, now resetting output streams",0Dh,0Ah)
+	invoke	printtolog, CStr("DAC unmuted, pin configured, now resetting output streams",0Dh,0Ah)
 endif
 
 	movzx	eax,es:[edi].HDAREGS.gcap
@@ -893,7 +922,7 @@ endif
 if	?DEBUGLOG
 	 invoke	printtolog, CStr("blanking STATESTS...",0Dh,0Ah)
 endif
-	 mov	es:[edi].HDAREGS.statests,ax	; write 1s back to clear the bits
+	 mov	es:[edi].HDAREGS.statests,ax	; write 1s back to clear
 	 mov	ecx,1000h
 @@:
 	 call	wait_timerch2
@@ -1092,9 +1121,9 @@ endif
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("finding rate index...",0Dh,0Ah)
-	invoke	printtolog, CStr("Bits in requested rate: ")
+	invoke	printtolog, CStr("requested rate: ")
 	invoke	printbinword,bx
-	invoke	printtolog, CStr(0Dh,0Ah)
+	invoke	printtolog, CStr("b",0Dh,0Ah)
 endif
 	mov	ax,bx
 	.if	ax == 10000	; Rayman 1 uses this non-standard rate...
@@ -1106,11 +1135,11 @@ endif
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("checking if DAC supports this rate...",0Dh,0Ah)
-	invoke	printtolog, CStr("[bits in rate support bitmap: ")
+	invoke	printtolog, CStr("[rate support bitmap: ")
 	invoke	printbinword,[ratebitmap]
-	invoke	printtolog, CStr("; bits in rate index: ")
+	invoke	printtolog, CStr("; rate index: ")
 	invoke	printbinword,ax
-	invoke	printtolog, CStr("]",0Dh,0Ah)
+	invoke	printtolog, CStr("b]",0Dh,0Ah)
 endif
 	bt	[ratebitmap],ax
 	movzx	ebx,ax
@@ -1242,42 +1271,29 @@ endif
 	mov	[dwMainBufSize],ecx
 
 	cmp	[soft_divider],1
-	;jna	@F
-	jmp	@F
+	jna	@F
+	;jmp	@F
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("software divider in operation (")
 	movzx	ax,[soft_divider]
 	invoke	printbinword,ax
-	invoke	printtolog, CStr("), creating new buffer...",0Dh,0Ah)
+	invoke	printtolog, CStr("b), creating new buffer...",0Dh,0Ah,"[")
+	invoke	printbinword,word ptr [dwMainBufSize+2]
+	invoke	printbinword,word ptr [dwMainBufSize]
+	invoke	printtolog, CStr("b --> ")
 endif
 	mov	eax,ecx
 	movzx	ecx,[soft_divider]
 	mul	ecx		; destroys EDX, but alloc_dma_buf sets it anyway
 	mov	ecx,eax
-
-	push	es
-	push	ebx
-	mov	ax,3500h	; get interrupt vector 0 (#DE)
-	int	21h
-	mov	[oldDE_off],ebx
-	mov	[oldDE_seg],es
-	pop	ebx
-	pop	es
-
-	mov	ax,2500h	; set interrupt vector 0 (#DE)
-	push	ds
-	push	edx
-	push	cs
-	pop	ds
-	mov	edx,offset div0_handler
-	int	21h
-	pop	edx
-	pop	ds
 if	?DEBUGLOG
-	invoke	printtolog, CStr("divide-by-zero handler set",0Dh,0Ah)
+	ror	ecx,10h
+	invoke	printbinword,cx
+	ror	ecx,10h
+	invoke	printbinword,cx
+	invoke	printtolog, CStr("b]",0Dh,0Ah)
 endif
-
 	jmp	@@createauxbuf
 
 @@:
@@ -1372,9 +1388,9 @@ endif
 	mov	edi,[firststreamoff]
 if	?DEBUGLOG
 	invoke	printtolog, CStr("checking if sound is playing...",0Dh,0Ah)
-	invoke	printtolog, CStr("Bits in wCtl: ")
+	invoke	printtolog, CStr("wCtl == ")
 	invoke	printbinword,es:[edi].STREAM.wCtl
-	invoke	printtolog, CStr(0Dh,0Ah)
+	invoke	printtolog, CStr("b",0Dh,0Ah)
 endif
 	btr	es:[edi].STREAM.wCtl,1	; RUN bit
 	jnc	@@skip
@@ -1385,9 +1401,9 @@ endif
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("Waiting for DMA engine to stop...",0Dh,0Ah)
-	invoke	printtolog, CStr("Bits in wCtl: ")
+	invoke	printtolog, CStr("wCtl == ")
 	invoke	printbinword,es:[edi].STREAM.wCtl
-	invoke	printtolog, CStr(0Dh,0Ah)
+	invoke	printtolog, CStr("b",0Dh,0Ah)
 endif
 	mov	ecx,1000h
 @@:
@@ -1396,10 +1412,9 @@ endif
 	loopnz	@B
 
 if	?DEBUGLOG
-	invoke	printtolog, CStr("Bits in wCtl: ")
+	invoke	printtolog, CStr("wCtl == ")
 	invoke	printbinword,es:[edi].STREAM.wCtl
-	invoke	printtolog, CStr(0Dh,0Ah)
-	invoke	printtolog, CStr("Saving format and resetting stream...",0Dh,0Ah)
+	invoke	printtolog, CStr("b",0Dh,0Ah,"Saving format and resetting stream...",0Dh,0Ah)
 endif
 	push	es:[edi].STREAM.wFormat
 
@@ -1418,9 +1433,9 @@ endif
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("Stream reset, restoring format",0Dh,0Ah)
-	invoke	printtolog, CStr("Bits in wCtl: ")
+	invoke	printtolog, CStr("wCtl == ")
 	invoke	printbinword,es:[edi].STREAM.wCtl
-	invoke	printtolog, CStr(0Dh,0Ah)
+	invoke	printtolog, CStr("b",0Dh,0Ah)
 endif
 	pop	es:[edi].STREAM.wFormat
 
@@ -1433,28 +1448,9 @@ if	?DEBUGLOG
 endif
 	xchg	eax,[dwAuxSelHdl]
 	call	free_dma_buf
-
 if	?DEBUGLOG
-	invoke	printtolog, CStr("Checking if divide-by-zero handler is set...",0Dh,0Ah)
+	invoke	printtolog, CStr("Done",0Dh,0Ah)
 endif
-	cmp	[oldDE_seg],0
-	jz	@@skip
-
-if	?DEBUGLOG
-	invoke printtolog, CStr("yes, resetting it...",0Dh,0Ah)
-endif
-	mov	ax,2500h	; set interrupt vector 0 (#DE)
-	push	ds
-	lds	edx,[oldDEhandler]
-	int	21h
-	pop	ds
-if	?DEBUGLOG
-	invoke printtolog, CStr("#DE handler reset",0Dh,0Ah)
-endif
-
-	xor	eax,eax
-	mov	[oldDE_seg],ax
-	mov	[oldDE_off],eax
 
 @@skip:
 	pop	es
@@ -2136,10 +2132,10 @@ endif
 	   mov	ebx,ecx
 	   shr	ebx,10h		; get the full address into BX:CX
 if	?DEBUGLOG
-	 invoke	printtolog, CStr("Bits in BAR0: ")
+	 invoke	printtolog, CStr("BAR0 == ")
 	 invoke	printbinword,bx
 	 invoke	printbinword,cx
-	 invoke	printtolog, CStr(0Dh,0Ah)
+	 invoke	printtolog, CStr("b",0Dh,0Ah)
 endif
 	   xor	esi,esi
 	   mov	edi,size HDAREGS
@@ -2157,10 +2153,10 @@ endif
 	   shr	ebx,10h
 	 .endif
 if	?DEBUGLOG
-	 invoke	printtolog, CStr("Bits in hdareg_linaddr: ")
+	 invoke	printtolog, CStr("hdareg_linaddr == ")
 	 invoke	printbinword,bx
 	 invoke	printbinword,cx
-	 invoke	printtolog, CStr(0Dh,0Ah)
+	 invoke	printtolog, CStr("b",0Dh,0Ah)
 endif
 
 if	?DEBUGLOG
@@ -2187,13 +2183,13 @@ alloc_phys_sel	proc near
 	; SI:DI = size
 	; returns selector in AX pointing to the physical address in BX:CX
 if	?DEBUGLOG
-	invoke	printtolog, CStr("alloc_phys_sel: Bits in base address: ")
+	invoke	printtolog, CStr("alloc_phys_sel: base address == ")
 	invoke	printbinword,bx
 	invoke	printbinword,cx
-	invoke	printtolog, CStr(0Dh,0Ah,"alloc_phys_sel: Bits in size: ")
+	invoke	printtolog, CStr("b",0Dh,0Ah,"alloc_phys_sel: size == ")
 	invoke	printbinword,si
 	invoke	printbinword,di
-	invoke	printtolog, CStr(0Dh,0Ah)
+	invoke	printtolog, CStr("b",0Dh,0Ah)
 endif
 	call	map_physmem
 	jc	@F
@@ -2667,12 +2663,15 @@ timer_handler	proc far
 	mov	edx,es:[edi].STREAM.dwLinkPos
 	mov	eax,es:[edi].STREAM.dwBufLen
 	mov	ecx,eax
-	shr	eax,1		; Fill halfway through the DMA buffer (like the GUS driver)
+	shr	eax,1		; Fill halfway through the DMA buffer
 	add	eax,edx
 	cmp	eax,ecx
 	jb	@F
 	sub	eax,ecx		; Wrap around through beginning of buffer
 @@:
+
+	and	eax,not 3	; Ensure timer driver fills aligned dwords
+	and	edx,not 3	; Ensure timer driver fills aligned dwords
 
 	cmp	[dwAuxSelHdl],0
 	jz	@@noaux		; No aux buffer, OK to return what we have
@@ -2680,36 +2679,49 @@ timer_handler	proc far
 	push	gs
 	push	esi
 
+	;call	logtostderr
+
 	lgs	esi,[lpAuxBufFilled]
 	mov	[dwLastFillEAX],eax
 	mov	ecx,eax
 	sub	ecx,esi
 	jnb	@@nowrap
 
+	push	es
+	push	edx
+	push	eax
+
 	mov	ecx,es:[edi].STREAM.dwBufLen
 	sub	ecx,esi		; get the distance to the end of the buffer
 	shr	ecx,2		; convert to dwords
-	push	es
 
 	push	gs
 	pop	es		; ES points to aux buffer
 	mov	edi,esi
-
-	push	edx
-	push	eax
 	mov	eax,esi
 	xor	edx,edx
 	movzx	esi,[soft_divider]
+	;invoke	printtolog, CStr("soft divider is ")
+	;invoke	printbinword,si
+	;invoke	printtolog, CStr("b, starting pre-wraparound copy",0Dh,0Ah)
 	div	esi
 	mov	esi,eax
 
 	mov	edx,ecx
+	and	esi,not 3	; ensure we're copying full dwords
+	and	edi,not 3	; ensure we're copying full dwords
+	;call	announcecopy
 @@:
 	movzx	ecx,[soft_divider]
+	.if	edx < ecx
+	  mov	ecx,edx
+	.endif
 	lodsd	fs:[esi]
 	sub	edx,ecx
 	rep	stosd		; copy what's been filled in, to the aux buffer
 	ja	@B		; flags set by subtraction above
+
+	;invoke	printtolog, CStr("pre-wraparound copy done",0Dh,0Ah)
 	pop	eax
 	pop	edx
 	pop	es
@@ -2718,28 +2730,38 @@ timer_handler	proc far
 	mov	ecx,eax
 
 @@nowrap:
-	shr	ecx,2		; convert to dwords
 	push	es
-	push	ds
+	push	edx
+	push	eax
 
+	shr	ecx,2		; convert to dwords
 	push	gs
 	pop	es		; ES points to aux buffer
 	mov	edi,esi
-	push	edx
-	push	eax
 	mov	eax,esi
 	xor	edx,edx
 	movzx	esi,[soft_divider]
+	;invoke	printtolog, CStr("soft divider is ")
+	;invoke	printbinword,si
+	;invoke	printtolog, CStr("b, starting post-wraparound copy",0Dh,0Ah)
 	div	esi
 	mov	esi,eax
 
 	mov	edx,ecx
+	and	esi,not 3	; ensure we're copying full dwords
+	and	edi,not 3	; ensure we're copying full dwords
+	;call	announcecopy
 @@:
 	movzx	ecx,[soft_divider]
+	.if	edx < ecx
+	  mov	ecx,edx
+	.endif
 	lodsd	fs:[esi]
 	sub	edx,ecx
 	rep	stosd		; copy what's been filled in to the aux buffer
 	ja	@B		; flags set by subtraction above
+
+	;invoke	printtolog, CStr("post-wraparound copy done",0Dh,0Ah)
 	pop	eax
 	pop	edx
 	pop	es
@@ -2762,6 +2784,8 @@ timer_handler	proc far
 	mov	edx,eax
 	pop	eax
 
+	;invoke	closelog
+
 	jmp	@F		; previous position already set above
 
 @@noaux:
@@ -2781,26 +2805,6 @@ timer_handler	proc far
 	assume	ds:nothing
 	ret
 timer_handler	endp
-
-; handle division errors that pop up,
-; at least if DPMI host doesn't have proper exception handling
-div0_handler	proc
-	mov	ds,cs:[lpPortList_seg]
-	assume	ds:_TEXT
-
-	mov	ax,3		; switch to VGA text mode
-	int	10h
-	invoke	printstderr, CStr(33o,"[31m","FATAL: Division error (")
-	mov	eax,cs
-	.if	eax != [esp+4]
-	 invoke	printstderr, CStr("not ")
-	.endif
-	invoke	printstderr, CStr("within HD Audio Driver). Quitting...",33o,"[37m",0Dh,0Ah)
-
-	mov	ax,4CFFh	; exit with 255 status code
-	sti
-	int	21h
-div0_handler	endp
 
 ; handle protection errors that pop up,
 ; at least if DPMI host doesn't have proper exception handling
