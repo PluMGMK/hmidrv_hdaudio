@@ -2663,7 +2663,7 @@ timer_handler	proc far
 	mov	edx,es:[edi].STREAM.dwLinkPos
 	mov	eax,es:[edi].STREAM.dwBufLen
 	mov	ecx,eax
-	shr	eax,1		; Fill halfway through the DMA buffer
+	shr	eax,2		; Fill quarter-way through the DMA buffer
 	add	eax,edx
 	cmp	eax,ecx
 	jb	@F
@@ -2784,6 +2784,9 @@ timer_handler	proc far
 	mov	edx,eax
 	pop	eax
 
+	and	eax,not 3	; Ensure timer driver fills aligned dwords
+	and	edx,not 3	; Ensure timer driver fills aligned dwords
+
 	;invoke	closelog
 
 	jmp	@F		; previous position already set above
@@ -2805,26 +2808,6 @@ timer_handler	proc far
 	assume	ds:nothing
 	ret
 timer_handler	endp
-
-; handle protection errors that pop up,
-; at least if DPMI host doesn't have proper exception handling
-gp_handler	proc
-	mov	ds,cs:[lpPortList_seg]
-	assume	ds:_TEXT
-
-	mov	ax,3		; switch to VGA text mode
-	int	10h
-	invoke	printstderr, CStr(33o,"[31m","FATAL: Protection error (")
-	mov	eax,cs
-	.if	eax != [esp+8]	; since [esp] == error code
-	 invoke	printstderr, CStr("not ")
-	.endif
-	invoke	printstderr, CStr("within HD Audio Driver). Quitting...",33o,"[37m",0Dh,0Ah)
-
-	mov	ax,4CFFh	; exit with 255 status code
-	sti
-	int	21h
-gp_handler	endp
 
 _TEXT	ends
 
