@@ -57,6 +57,7 @@ RMCS ends
 DEVNAME		equ 
 DEVSTOENUMERATE	equ 10h
 ?DEBUGLOG	equ 1
+?CDAUDIO		equ 1
 
 _TEXT	segment	use32
 	assume	ds:nothing,es:nothing,gs:nothing,fs:_TEXT
@@ -168,12 +169,149 @@ oldIRQ_seg	dw 0
 irqvec		db 0		; the actual interrupt vector corresponding to our IRQ
 oldpciirq	db 0		; the interrupt line of the controller before we set it
 
+if	?CDAUDIO
+?CDBUFSIZE	equ 20		; size in sectors
+?CDVOLCTL	equ 0
+
+IOCTLRW	struc			; IOCTL read/write request
+	bLen	db ?		; 3 for read, 12 for write
+	bUnit	db ?
+	bCmd	db ?
+	wStatus	dw ?
+	_resd	dq ?
+	_resd1	db ?		; media descriptor byte = 0 for MSCDEX
+	;lpBuf	label dword
+	wBufOff	dw ?
+	wBufSeg	dw ?
+	wCount	dw ?
+	_resd2	dw ?		; starting sector number = 0 for MSCDEX
+	_resd3	dd ?		; volume ID = 0 for MSCDEX
+IOCTLRW	ends
+
+ReadL	struc
+	bLen	db ?
+	bUnit	db ?
+	bCmd	db ?
+	wStatus	dw ?
+	_resd	dq ?
+	bAMode	db ?		; addressing mode (RedBook / High Sierra)
+	;lpBuf	label dword
+	wBufOff	dw ?
+	wBufSeg	dw ?
+	wSectors dw ?
+	dwStart	dd ?		; first sector
+	bRMode	db ?		; read mode (cooked / raw) - use raw to get 930h
+	bISize	db ?		; interleave size
+	bISkip	db ?		; interleave skip factor
+ReadL	ends
+
+PlayReq	struc
+	bLen	db ?
+	bUnit	db ?
+	bCmd	db ?
+	wStatus	dw ?
+	_resd	dq ?
+	bAMode	db ?		; addressing mode (RedBook / High Sierra)
+	dwStart	dd ?		; first sector
+	dwSectors dd ?
+PlayReq	ends
+
+OutChanInfo	struc
+	bInChan	db ?		; input channel for this output channel
+	bVolume	db ?		; volume knob for this output channel
+OutChanInfo	ends
+
+AudInfo		struc
+	bCode	db ?		; 4 for read, 3 for write
+	Info	OutChanInfo 4 dup (<?>)
+AudInfo		ends
+
+AudStat		struc
+	bCode	db ?		; 15 for read
+	wStatus	dw ?		; Bit 0 = paused, all others reserved
+	dwStart	dd ?
+	dwEnd	dd ?
+AudStat		ends
+
+; dwStat meaning:
+; Bit 0 = door open
+; Bit 1 = door unlocked
+; Bit 2 = supports raw reading (needed to be useful to us)
+; Bit 3 = writeable
+; Bit 4 = can play audio/video
+; Bit 5 = interleaving supported
+; Bit 6 = reserved
+; Bit 7 = supports prefetching (needed to be useful to us)
+; Bit 8 = supports audio channel manipulation
+; Bit 9 = supports Red Book addressing mode
+DevStat		struc
+	bCode	db ?		; 6 for read
+	dwStat	dd ?
+DevStat		ends
+
+QInfo		struc
+	bCode	db ?		; 12 for read
+	bCtlADR	db ?
+	bTrack	db ?
+	bPoint	db ?
+	bMinute	db ?
+	bSecond	db ?
+	bFrame	db ?
+	_resd	db ?		; zero
+	bPMin	db ?
+	bPSec	db ?
+	bPFrame	db ?
+QInfo		ends
+
+; layout of our first conventional-memory buffer for querying CD drives
+CdRmHeadBuf	struc
+	wFirstS	dw ?		; selector of first buffer in linked list
+	bDrives	db ?		; number of drives available
+	sReq	IOCTLRW<?>
+	sInfo	DevStat<?>
+	sRmCall	RMCS <>
+CdRmHeadBuf	ends
+
+; layout of our per-drive conventional-memory buffers for talking to MSCDEX
+CdRmDriveBuf	struc
+	wNextS	dw ?		; selector of next buffer in linked list
+	bDrive	db ?		; index of drive associated with this buffer
+	sReq	ReadL<?>
+	sInfo	AudInfo<?>
+	sStat	AudStat<?>
+	sQChan	QInfo<?>
+	wStatus	dw ?		; set bit 9 to indicate we're playing
+	dwBufPos dd ?
+	align	4		; optimize performance for reading dwords
+	Samples	db (?CDBUFSIZE * 930h) dup (?)
+CdRmDriveBuf	ends
+
+; Pointer to head buffer
+wCdRmBufSel	dw ?
+wCdRmBufSeg	dw ?
+
+; selector for entire MiB of Real Mode memory
+wRmMemSel	dw ?
+
+; real-mode callback to set the busy bit on return from an intercepted int 2F
+dwSetBusyCB	label dword
+wSetBusyCBOff	dw ?
+wSetBusyCBSeg	dw ?
+
+dwOldInt2F	label dword
+wOldInt2FOff	dw ?
+wOldInt2FSeg	dw ?
+
+bCdDivider	db 1	; set to 2 if running at 96 kHz (to simulate 32 kHz)
+endif
+
 ; Bit 0 = successfully initialized
 ; Bit 1 = timer entered
 ; Bit 2 = IRQ entered
 ; Bit 3 = Timer entered
 ; Bit 4 = Sound paused
 ; Bit 5 = Sound temporarily stopped (e.g. for setting rate)
+; Bit 6 = CD Audio possible
 statusword	dw 0
 ; bitmap representing rates supported by the currently-selected DAC node
 ratebitmap	dw 0
@@ -319,6 +457,20 @@ printbinword	proc near stdcall	uses es edi ecx ebx eax	wOut:word
 	popf
 	ret
 printbinword	endp
+
+if	?CDAUDIO
+; Print nth drive letter to the debug log
+curdriveletter	db ?
+		db 0
+printdriveletter	proc near stdcall	uses eax	bOut:byte
+	mov	al,[bOut]
+	add	al,'A'
+	mov	[curdriveletter],al
+
+	invoke	printtolog, offset curdriveletter
+	ret
+printdriveletter	endp
+endif
 
 printnodetype	proc near stdcall	bNodeType:byte
 	.if	[bNodeType] == WTYPE_AUDIOOUT
@@ -1357,6 +1509,271 @@ if	?DEBUGLOG
 	invoke	printtolog, CStr("stream initialized",0Dh,0Ah)
 endif
 
+if	?CDAUDIO
+if	?DEBUGLOG
+	invoke	printtolog, CStr("checking if MSCDEX is available...",0Dh,0Ah)
+endif
+	mov	ax,1500h	; MSCDEX installation check
+	xor	bx,bx
+	int	2Fh
+	test	bx,bx
+	jz	@@skip
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("MSCDEX installed with ")
+	invoke	printbinword,bx
+	invoke	printtolog, CStr("b drives, beginning on ")
+	invoke	printdriveletter,cl
+	invoke	printtolog, CStr(":",0Dh,0Ah,"checking the version...",0Dh,0Ah)
+endif
+
+	mov	si,bx		; save number of drives
+	mov	ax,150Ch
+	xor	bx,bx
+	int	2Fh
+	cmp	bx,20Ah		; 2.10 needed for IOCTL requests
+	jb	@@skip
+if	?DEBUGLOG
+	invoke	printtolog, CStr("MSCDEX > 2.10 installed, allocating buffer to check drives...",0Dh,0Ah)
+endif
+
+	mov	ax,100h		; allocate DOS memory block
+	mov	bx,(size CdRmHeadBuf + 0Fh) SHR 4
+	int	31h
+
+if	?DEBUGLOG
+	jnc	@F
+	cmp	ax,8
+	jne	@@skip
+	invoke	printtolog, CStr("Insufficient memory - largest MCB is ")
+	invoke	printbinword,bx
+	invoke	printtolog, CStr("b paragraphs",0Dh,0Ah)
+	jmp	@@skip
+@@:
+else
+	jc	@@skip
+endif
+
+	mov	[wCdRmBufSeg],ax
+	mov	[wCdRmBufSel],dx
+	mov	es,dx
+	push	gs
+	mov	gs,dx
+
+	mov	dx,cx		; save first drive
+if	?DEBUGLOG
+	invoke	printtolog, CStr("buffer allocated, clearing...",0Dh,0Ah)
+endif
+	xor	edi,edi
+	xor	eax,eax
+	mov	ecx,(size CdRmHeadBuf + 3) SHR 2
+	rep	stosd
+if	?DEBUGLOG
+	invoke	printtolog, CStr("buffer cleared, checking drives...",0Dh,0Ah)
+endif
+
+	mov	ax,[wCdRmBufSeg]
+	mov	es:[CdRmHeadBuf.sRmCall.rCX],dx
+	mov	es:[CdRmHeadBuf.sRmCall.rES],ax
+	mov	es:[CdRmHeadBuf.sRmCall.rBX],CdRmHeadBuf.sReq
+
+	mov	es:[CdRmHeadBuf.sInfo.bCode],6		; device status
+
+	.while	si
+if	?DEBUGLOG
+	  invoke printtolog, CStr("checking drive ")
+	  invoke printdriveletter,byte ptr es:[CdRmHeadBuf.sRmCall.rCX]
+	  invoke printtolog, CStr(": for suitability...",0Dh,0Ah)
+endif
+	  mov	ax,[wCdRmBufSeg]
+	  mov	es:[CdRmHeadBuf.sReq.bLen],size IOCTLRW
+	  mov	es:[CdRmHeadBuf.sReq.bCmd],3		; IOCTL read
+	  mov	es:[CdRmHeadBuf.sReq.wBufSeg],ax
+	  mov	es:[CdRmHeadBuf.sReq.wBufOff],CdRmHeadBuf.sInfo
+	  mov	es:[CdRmHeadBuf.sReq.wCount],size DevStat
+
+	  mov	es:[CdRmHeadBuf.sRmCall.rAX],1510h	; send device request 
+	  mov	ax,300h		; simulate real mode interrupt
+	  mov	bx,2Fh
+	  xor	cx,cx
+	  mov	edi,CdRmHeadBuf.sRmCall
+	  int	31h
+	  jc	@@next
+	  bt	es:[CdRmHeadBuf.sRmCall.rFlags],0
+	  jc	@@next
+
+if	?DEBUGLOG
+	  invoke printtolog, CStr("drive status request sent...",0Dh,0Ah)
+endif
+	  mov	eax,es:[CdRmHeadBuf.sInfo.dwStat]
+	  bt	eax,2		; supports raw reading?
+	  jnc	@@next
+if	?DEBUGLOG
+	  invoke printtolog, CStr("supports raw reading",0Dh,0Ah)
+endif
+;	  bt	eax,7		; supports prefetching?
+;	  jnc	@@next
+;if	?DEBUGLOG
+;	  invoke printtolog, CStr("supports prefetching",0Dh,0Ah)
+;endif
+
+	  mov	ax,100h		; allocate DOS memory block
+	  mov	bx,(size CdRmDriveBuf + 0Fh) SHR 4
+	  int	31h
+if	?DEBUGLOG
+	  jnc	@F
+	  cmp	ax,8
+	  jne	@@skip
+	  invoke printtolog, CStr("Insufficient memory for drive buffer - largest MCB is ")
+	  invoke printbinword,bx
+	  invoke printtolog, CStr("b paragraphs",0Dh,0Ah)
+	  jmp	@@next
+@@:
+else
+	  jc	@@next
+endif
+
+	  push	es
+	  mov	es,dx
+	  mov	bx,ax
+if	?DEBUGLOG
+	  invoke printtolog, CStr("drive buffer allocated, clearing...",0Dh,0Ah)
+endif
+	  xor	edi,edi
+	  xor	eax,eax
+	  mov	ecx,(size CdRmDriveBuf + 3) SHR 2
+	  rep	stosd
+if	?DEBUGLOG
+	  invoke printtolog, CStr("drive buffer cleared, saving audio channel info...",0Dh,0Ah)
+endif
+	  pop	es
+
+	  mov	gs:[CdRmDriveBuf.wNextS],dx	; or CdRmHeadBuf.wFirstS
+	  mov	gs,dx
+
+	  mov	ax,es:[CdRmHeadBuf.sRmCall.rCX]
+	  mov	gs:[CdRmDriveBuf.bDrive],al
+
+	  mov	gs:[CdRmDriveBuf.sReq.bLen],size ReadL
+	  ;mov	gs:[CdRmDriveBuf.sReq.bCmd],80h		; READ LONG
+	  mov	gs:[CdRmDriveBuf.sReq.wBufOff],CdRmDriveBuf.Samples
+	  mov	gs:[CdRmDriveBuf.sReq.wBufSeg],bx
+	  mov	gs:[CdRmDriveBuf.sReq.bRMode],1		; raw
+
+	  mov	gs:[CdRmDriveBuf.sInfo.bCode],4		; audio channel info
+	  mov	gs:[CdRmDriveBuf.sQChan.bCode],0Ch	; audio Q-Channel info
+	  mov	gs:[CdRmDriveBuf.sStat.bCode],0Fh	; audio status info
+
+	  ;mov	es:[CdRmHeadBuf.sReq.bLen],size IOCTLRW
+	  ;mov	es:[CdRmHeadBuf.sReq.bCmd],3		; IOCTL read
+	  mov	es:[CdRmHeadBuf.sReq.wBufSeg],bx
+	  mov	es:[CdRmHeadBuf.sReq.wBufOff],CdRmDriveBuf.sInfo
+	  mov	es:[CdRmHeadBuf.sReq.wCount],size AudInfo
+
+	  mov	es:[CdRmHeadBuf.sRmCall.rAX],1510h	; send device request 
+	  mov	ax,300h		; simulate real mode interrupt
+	  mov	bx,2Fh
+	  xor	cx,cx
+	  mov	edi,CdRmHeadBuf.sRmCall
+	  int	31h
+if	?DEBUGLOG
+	  invoke printtolog, CStr("audio channel info saved, stopping any current playback...",0Dh,0Ah)
+endif
+
+	  ; TODO: Seamlessly take over any ongoing audio playback?
+	  ; (Would need to fill sStat and sQChan, and set wStatus and dwBufPos)
+	  mov	es:[CdRmHeadBuf.sReq.bLen],0Dh
+	  mov	es:[CdRmHeadBuf.sReq.bCmd],133		; STOP AUDIO
+	  mov	es:[CdRmHeadBuf.sRmCall.rAX],1510h	; send device request 
+	  mov	ax,300h		; simulate real mode interrupt
+	  int	31h
+if	?DEBUGLOG
+	  invoke printtolog, CStr("drive ready to use!",0Dh,0Ah)
+endif
+	  inc	es:[CdRmHeadBuf.bDrives]
+
+@@next:
+	  ; next drive
+	  inc	es:[CdRmHeadBuf.sRmCall.rCX]
+	  dec	si
+	.endw
+
+@@cddone:
+	pop	gs
+	.if	es:[CdRmHeadBuf.bDrives]
+if	?DEBUGLOG
+	   invoke printtolog, CStr("drive(s) set up, installing interrupt handler...",0Dh,0Ah)
+endif
+	   xor	cx,cx
+	   mov	bx,cx
+	   mov	di,cx
+	   mov	si,10h		; SI:DI = 100000h = 1 MiB
+	   call	alloc_selector
+	   jc	@@skip
+	   mov	[wRmMemSel],ax
+if	?DEBUGLOG
+	   invoke printtolog, CStr("allocated selector for real-mode memory",0Dh,0Ah)
+endif
+
+	   mov	ax,200h		; get real mode interrupt vector
+	   mov	bl,2Fh
+	   int	31h
+	   mov	[wOldInt2FOff],dx
+	   mov	[wOldInt2FSeg],cx
+
+	   mov	ax,303h		; allocate real-mode callback
+	   push	ds
+	   push	cs
+	   pop	ds
+	   mov	esi,offset int2f_setbusy
+	   mov	edi,CdRmHeadBuf.sRmCall
+	   int	31h
+	   pop	ds
+	   jc	@@skip
+if	?DEBUGLOG
+	   invoke printtolog, CStr("real-mode callback created to set busy bit",0Dh,0Ah)
+endif
+	   mov	[wSetBusyCBOff],dx
+	   mov	[wSetBusyCBSeg],cx
+
+	   mov	ax,303h		; allocate real-mode callback
+	   push	ds
+	   push	cs
+	   pop	ds
+	   mov	esi,offset int2f_handler
+	   mov	edi,CdRmHeadBuf.sRmCall
+	   int	31h
+	   pop	ds
+	   jc	@@skip
+if	?DEBUGLOG
+	   invoke printtolog, CStr("real-mode callback created for int 2F handler",0Dh,0Ah)
+endif
+
+	   mov	ax,201h		; set real mode interrupt vector
+	   mov	bl,2Fh
+	   int	31h
+if	?DEBUGLOG
+	   invoke printtolog, CStr("handler installed!",0Dh,0Ah)
+endif
+
+	   bts	[statusword],6
+	.else
+if	?DEBUGLOG
+	   invoke printtolog, CStr("no usable drives, freeing buffer...",0Dh,0Ah)
+endif
+	   mov	ax,101h		; free DOS memory block
+	   mov	dx,es
+	   xor	cx,cx
+	   mov	es,cx	; nullify ES so we don't end up with an invalid selector
+	   int	31h
+if	?DEBUGLOG
+	   invoke printtolog, CStr("buffer freed",0Dh,0Ah)
+endif
+	   xor	eax,eax
+	   mov	dword ptr [wCdRmBufSel],eax
+	.endif
+endif
+
 @@skip:
 	pop	es
 
@@ -1382,6 +1799,76 @@ if	?DEBUGLOG
 	invoke	printtolog, CStr("resetting pause status",0Dh,0Ah)
 endif
 	btr	[statusword],4
+
+if	?CDAUDIO
+if	?DEBUGLOG
+	invoke	printtolog, CStr("checking if CD audio is set up...",0Dh,0Ah)
+endif
+	btr	[statusword],6
+	jnc	@F
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("freeing callbacks...",0Dh,0Ah)
+endif
+	mov	ax,200h		; get real mode interrupt vector
+	mov	bl,2Fh
+	int	31h
+	mov	ax,304h		; free real mode callback
+	int	31h
+	mov	dx,[wSetBusyCBOff]
+	mov	cx,[wSetBusyCBSeg]
+	mov	ax,304h		; free real mode callback
+	int	31h
+if	?DEBUGLOG
+	invoke	printtolog, CStr("callbacks freed, resetting vector...",0Dh,0Ah)
+endif
+
+	mov	dx,[wOldInt2FOff]
+	mov	cx,[wOldInt2FSeg]
+	mov	ax,201h		; set real mode interrupt vector
+	mov	bl,2Fh
+	int	31h
+if	?DEBUGLOG
+	invoke	printtolog, CStr("handler uninstalled",0Dh,0Ah)
+endif
+
+@@:
+	mov	bx,[wRmMemSel]
+	test	bx,bx
+	jz	@F
+if	?DEBUGLOG
+	invoke printtolog, CStr("freeing selector for real-mode memory...",0Dh,0Ah)
+endif
+	call	free_selector
+
+@@:
+if	?DEBUGLOG
+	invoke	printtolog, CStr("checking if CD audio linked list exists...",0Dh,0Ah)
+endif
+	cmp	dword ptr [wCdRmBufSel],0
+	jz	@@cddone
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("freeing CD buffers...",0Dh,0Ah)
+endif
+	push	gs
+	mov	gs,[wCdRmBufSel]
+@@:
+	mov	dx,gs
+	mov	gs,gs:[CdRmDriveBuf.wNextS]	; or CdRmHeadBuf.wFirstS
+	mov	ax,101h				; free DOS memory block
+	int	31h
+	mov	eax,gs
+	test	eax,eax
+	jnz	@B
+
+	mov	dword ptr [wCdRmBufSel],eax
+if	?DEBUGLOG
+	invoke	printtolog, CStr("CD buffers freed",0Dh,0Ah)
+endif
+	pop	gs
+@@cddone:
+endif
 
 	push	es
 	call	get_hdareg_ptr
@@ -1833,6 +2320,7 @@ alloc_dma_buf	proc near
 	sub	esp,size RMCS
 	mov	ebp,esp
 	mov	[ebp].RMCS.resvrd,0
+	mov	[ebp].RMCS.rSSSP,0
 
 	mov	[ebp].RMCS.rEBP,eax	; stash the size on the stack for now...
 	mov	eax,[xmsentry]
@@ -1990,6 +2478,7 @@ free_dma_buf	proc near
 	sub	esp,size RMCS
 	mov	ebp,esp
 	mov	[ebp].RMCS.resvrd,0
+	mov	[ebp].RMCS.rSSSP,0
 
 	mov	bx,ax			; get selector
 	shr	eax,10h
@@ -2531,6 +3020,217 @@ handle_bcis	proc near
 	ret
 handle_bcis	endp
 
+if	?CDAUDIO
+; Takes segment pointing to a CdRmDriveBuf in GS
+fillcdbuf	proc near
+	push	ebp
+	sub	esp,size RMCS
+	mov	ebp,esp
+	mov	[ebp].RMCS.resvrd,0
+	mov	[ebp].RMCS.rSSSP,0
+
+	mov	[ebp].RMCS.rESI,eax	; stash EAX
+	mov	[ebp].RMCS.rEDX,ebx	; stash EBX
+	mov	[ebp].RMCS.rEBP,ecx	; stash ECX
+	mov	[ebp].RMCS.rEDI,edi	; stash EDI
+	push	es
+
+	mov	[ebp].RMCS.rAX,1510h	; send device driver request
+	movzx	ax,gs:[CdRmDriveBuf.bDrive]
+	mov	bx,gs:[CdRmDriveBuf.sReq.wBufSeg]
+	mov	ecx,[dwOldInt2F]
+	mov	[ebp].RMCS.rCX,ax
+	mov	[ebp].RMCS.rES,bx
+	mov	[ebp].RMCS.rBX,CdRmDriveBuf.sReq
+	mov	[ebp].RMCS.rCSIP,ecx
+
+	mov	ecx,gs:[CdRmDriveBuf.sStat.dwEnd]
+	sub	ecx,gs:[CdRmDriveBuf.sReq.dwStart]
+	.if	ecx > ?CDBUFSIZE
+	   mov	ecx,?CDBUFSIZE
+	.else
+	   ; clear out the buffer since we'll only partially fill it
+	   ;call	logtostderr
+	   push	gs
+	   pop	es
+
+	   ;invoke printtolog,CStr("Clearing CD Audio buffer...",0Dh,0Ah)
+
+	   push	ecx
+	   mov	ecx,(size CdRmDriveBuf.Samples) SHR 2
+	   mov	edi,CdRmDriveBuf.Samples
+	   xor	eax,eax
+	   rep	stosd
+	   pop	ecx
+
+	   ;invoke printtolog,CStr("Done!",0Dh,0Ah)
+
+	   ;invoke closelog
+	   test	ecx,ecx
+	   jnz	@F
+
+	   ; reset the "playing" status
+	   btr	gs:[CdRmDriveBuf.wStatus],9	; busy bit = playing
+	   jmp	@@done
+@@:
+	.endif
+	mov	gs:[CdRmDriveBuf.sReq.wSectors],cx
+
+	push	ss
+	pop	es
+
+	push	ecx
+	mov	gs:[CdRmDriveBuf.sReq.bCmd],80h	; READ LONG
+	mov	edi,ebp
+	xor	bx,bx
+	mov	cx,bx
+	mov	ax,0302h		; call real-mode interrupt procedure
+	int	31h
+	pop	ecx
+
+	add	gs:[CdRmDriveBuf.sReq.dwStart],ecx
+	cmp	ecx,?CDBUFSIZE
+	jb	@@done
+
+	; encourage MSCDEX to prefetch the next N sectors so as not to block
+	mov	gs:[CdRmDriveBuf.sReq.bCmd],82h	; READ LONG PREFETCH
+	mov	ax,0302h		; call real-mode interrupt procedure
+	mov	cx,bx
+	int	31h
+
+	; update Q-Channel info
+	mov	ax,gs:[CdRmDriveBuf.sReq.wBufSeg]
+	mov	bx,[wCdRmBufSeg]
+
+	push	fs
+	mov	fs,[wCdRmBufSel]
+	mov	fs:[CdRmHeadBuf.sReq.bCmd],3	; IOCTL Read
+	mov	fs:[CdRmHeadBuf.sReq.wCount],size QInfo
+	mov	fs:[CdRmHeadBuf.sReq.wBufOff],CdRmDriveBuf.sQChan
+	mov	fs:[CdRmHeadBuf.sReq.wBufSeg],ax
+	pop	fs
+
+	mov	[ebp].RMCS.rES,bx
+	mov	[ebp].RMCS.rBX,CdRmHeadBuf.sReq
+	mov	ax,0302h		; call real-mode interrupt procedure
+	mov	bx,cx
+	int	31h
+
+@@done:
+	mov	ebx,[ebp].RMCS.rEDX	; restore EBX
+	mov	ecx,[ebp].RMCS.rEBP	; restore ECX
+	mov	edi,[ebp].RMCS.rEDI	; restore EDI
+	mov	eax,[ebp].RMCS.rESI	; restore EAX
+	pop	es
+
+	lea	esp,[ebp+size RMCS]
+	pop	ebp
+
+	ret
+fillcdbuf	endp
+
+; ES:EDI = buffer into which to mix the CD Audio stream
+; ECX = number of sample pairs to mix
+mixincdaudio	proc near	uses gs esi ebx eax edx
+	mov	gs,[wCdRmBufSel]
+	push	ebp
+
+@@driveloop:
+	mov	ax,gs:[CdRmDriveBuf.wNextS]	; or wFirstS for head buffer
+	test	ax,ax				; end of linked list?
+	jz	@@done
+	mov	gs,ax
+
+	bt	gs:[CdRmDriveBuf.wStatus],9	; audio playing?
+	jnc	@@driveloop			; if not, move to next drive
+	;call	logtostderr
+	;invoke	printtolog, CStr("Trying drive buffer at GS=")
+	;invoke	printbinword,ax
+	;invoke	printtolog, CStr("b, with status word ")
+	;invoke	printbinword,gs:[CdRmDriveBuf.wStatus]
+	;invoke	printtolog, CStr("b...",0Dh,0Ah)
+
+	mov	bl,gs:CdRmDriveBuf.sInfo.Info.bVolume[2]
+	mov	bh,bl	; BX = multiplication factor for right channel
+	shr	bx,1	; FFFFh --> 7FFFh, etc. (for signed multiplication)
+	ror	ebx,10h
+	mov	bl,gs:CdRmDriveBuf.sInfo.Info.bVolume[0]
+	mov	bh,bl	; BX = multiplication factor for left channel
+	shr	bx,1	; FFFFh --> 7FFFh, etc. (for signed multiplication)
+
+	push	ecx
+	push	edi
+	mov	ebp,ecx
+	mov	esi,gs:[CdRmDriveBuf.dwBufPos]
+@@loadloop:
+	.if	esi >= size CdRmDriveBuf
+	   call	fillcdbuf
+	   mov	esi,CdRmDriveBuf.Samples
+	   ; TODO: read Q-channel to see how to arrange the samples
+	.endif
+	lodsd	gs:[esi]
+if	?CDVOLCTL
+	xor	edx,edx
+	imul	bx
+	shld	dx,ax,1	; undo the SHR we did on BX earlier
+	bt	ax,0Eh
+	adc	dx,0	; increment DX if second-MSB of AX set (i.e. round up)
+
+	ror	eax,10h	; move to right channel
+	ror	edx,10h	; move to right channel
+	ror	ebx,10h	; move to right channel
+	imul	bx
+	shld	dx,ax,1	; undo the SHR we did on BX earlier
+	bt	ax,0Eh
+	adc	dx,0	; increment DX if second-MSB of AX set (i.e. round up)
+	ror	edx,10h	; back to left channel
+	ror	ebx,10h	; back to left channel
+else
+	mov	edx,eax
+endif
+
+	movzx	ecx,[bCdDivider]
+@@mixloop:
+	mov	eax,[es:edi]
+	add	ax,dx	; mix left channel
+	jno	@F
+	; handle clipping
+	bt	ax,0Fh	; check sign bit after overflow
+	mov	ax,8000h
+	sbb	ax,0	; if sign bit was 1, AX becomes 7FFFh, otherwise 8000h
+
+@@:
+	ror	eax,10h	; move to right channel
+	ror	edx,10h	; move to right channel
+	add	ax,dx	; mix right channel
+	jno	@F
+	; handle clipping
+	bt	ax,0Fh	; check sign bit after overflow
+	mov	ax,8000h
+	sbb	ax,0	; if sign bit was 1, AX becomes 7FFFh, otherwise 8000h
+
+@@:
+	ror	eax,10h	; back to left channel
+	ror	edx,10h	; back to left channel
+	stosd
+	dec	ebp
+	jz	@F
+	loop	@@mixloop
+	jmp	@@loadloop
+
+@@:
+	mov	gs:[CdRmDriveBuf.dwBufPos],esi
+	pop	edi
+	pop	ecx
+	;invoke	closelog
+	jmp	@@driveloop
+
+@@done:
+	pop	ebp
+	ret
+mixincdaudio	endp
+endif
+
 ; ---------------------------------------------------------------------- ;
 ; EXTERNAL functions from here (called directly from outside our driver) ;
 ; ---------------------------------------------------------------------- ;
@@ -2663,7 +3363,7 @@ timer_handler	proc far
 	mov	edx,es:[edi].STREAM.dwLinkPos
 	mov	eax,es:[edi].STREAM.dwBufLen
 	mov	ecx,eax
-	shr	eax,2		; Fill quarter-way through the DMA buffer
+	shr	eax,1		; Fill halfway through the DMA buffer
 	add	eax,edx
 	cmp	eax,ecx
 	jb	@F
@@ -2711,6 +3411,11 @@ timer_handler	proc far
 	and	esi,not 3	; ensure we're copying full dwords
 	and	edi,not 3	; ensure we're copying full dwords
 	;call	announcecopy
+
+if	?CDAUDIO
+	push	edx
+	push	edi
+endif
 @@:
 	movzx	ecx,[soft_divider]
 	.if	edx < ecx
@@ -2720,6 +3425,15 @@ timer_handler	proc far
 	sub	edx,ecx
 	rep	stosd		; copy what's been filled in, to the aux buffer
 	ja	@B		; flags set by subtraction above
+
+if	?CDAUDIO
+	pop	edi
+	pop	ecx
+	bt	[statusword],6
+	jnc	@F
+	call	mixincdaudio
+@@:
+endif
 
 	;invoke	printtolog, CStr("pre-wraparound copy done",0Dh,0Ah)
 	pop	eax
@@ -2751,6 +3465,11 @@ timer_handler	proc far
 	and	esi,not 3	; ensure we're copying full dwords
 	and	edi,not 3	; ensure we're copying full dwords
 	;call	announcecopy
+
+if	?CDAUDIO
+	push	edx
+	push	edi
+endif
 @@:
 	movzx	ecx,[soft_divider]
 	.if	edx < ecx
@@ -2760,6 +3479,15 @@ timer_handler	proc far
 	sub	edx,ecx
 	rep	stosd		; copy what's been filled in to the aux buffer
 	ja	@B		; flags set by subtraction above
+
+if	?CDAUDIO
+	pop	edi
+	pop	ecx
+	bt	[statusword],6
+	jnc	@F
+	call	mixincdaudio
+@@:
+endif
 
 	;invoke	printtolog, CStr("post-wraparound copy done",0Dh,0Ah)
 	pop	eax
@@ -2788,12 +3516,34 @@ timer_handler	proc far
 	and	edx,not 3	; Ensure timer driver fills aligned dwords
 
 	;invoke	closelog
-
-	jmp	@F		; previous position already set above
+	jmp	@@done
 
 @@noaux:
-	mov	[dwLastFillEAX],eax
+if	?CDAUDIO
+	bt	[statusword],6
+	jnc	@@cddone
+	push	es:[edi].STREAM.dwBufLen
+
+	push	fs
+	pop	es		; restore main buffer in ES
+	mov	edi,[dwLastFillEAX]
+	mov	ecx,eax
+	sub	ecx,edi
+	jnb	@F
+
+	mov	ecx,[esp]	; load saved buffer length
+	sub	ecx,edi		; get the distance to the end of the buffer
+	shr	ecx,2
+	call	mixincdaudio
+	xor	edi,edi
 @@:
+	add	esp,4		; remove saved buffer length from stack
+	shr	ecx,2
+	call	mixincdaudio
+@@cddone:
+endif
+	mov	[dwLastFillEAX],eax
+@@done:
 	mov	edi,esi
 	push	fs
 	pop	es
@@ -2808,6 +3558,204 @@ timer_handler	proc far
 	assume	ds:nothing
 	ret
 timer_handler	endp
+
+if	?CDAUDIO
+; Takes RedBook M:S:F address in EAX and returns HSG sector in EAX
+redbook2hsg	proc near	uses edx ecx
+	mov	edx,eax
+	shr	edx,10h	; EDX = minutes
+	imul	edx,edx,60
+	movzx	ecx,ah	; seconds
+	add	edx,ecx
+	imul	edx,edx,75
+	movzx	ecx,al	; frames
+	lea	eax,[ecx+edx-150]
+	ret
+redbook2hsg	endp
+
+int2f_handler	proc
+	; Remember: on entry, ES is set to our head buffer, and EDI points to
+	; sRmCall therein. So we have a readymade pointer to the head buffer!
+	; On the downside, this function is not reentrant, so we can't do any
+	; debug logging (since int 21h may re-call int 2Fh internally). :/
+	mov	ax,es:[edi.RMCS.rAX]
+	cmp	ah,15h				; MSCDEX
+	jne	@@passthrough
+
+	cmp	al,8				; absolute disc read
+	je	@F
+	cmp	al,10h				; send device request 
+	jne	@@passthrough			; don't care about anything else
+
+@@:
+	mov	cx,es:[edi.RMCS.rCX]		; drive number
+	mov	gs,cs:[wCdRmBufSel]
+@@:
+	mov	ax,gs:[CdRmDriveBuf.wNextS]	; or CdRmHeadBuf.wFirstS
+	test	ax,ax
+	jz	@@passthrough			; we didn't hook this drive
+	mov	gs,ax
+	cmp	cl,gs:[CdRmDriveBuf.bDrive]
+	jne	@B
+
+	mov	bp,gs:[CdRmDriveBuf.wStatus]
+	.if	es:[edi.RMCS.rAX] == 1508h	; absolute read
+	   bt	bp,9				; busy?
+	   jnc	@@passthrough
+
+	   bts	es:[edi.RMCS.rFlags],0		; set carry
+	   mov	es:[edi.RMCS.rAX],15h		; not ready
+	   jmp	@@return
+	.endif
+
+	mov	fs,cs:[wRmMemSel]
+	movzx	eax,es:[edi.RMCS.rBX]
+	movzx	ebx,es:[edi.RMCS.rES]
+	shl	ebx,4
+	add	ebx,eax				; FS:EBX = device request
+
+	.if	fs:[ebx.IOCTLRW.bCmd] == 3	; IOCTL READ
+	  push	ebx
+	  movzx	eax,fs:[ebx.IOCTLRW.wBufOff]
+	  movzx	ebx,fs:[ebx.IOCTLRW.wBufSeg]
+	  shl	ebx,4
+	  add	ebx,eax				; FS:EBX = read request
+
+	  .if	byte ptr fs:[ebx] == 0Fh	; Audio Status Info
+	    mov	ax,gs:[CdRmDriveBuf.sStat.wStatus]
+	    mov	ecx,gs:[CdRmDriveBuf.sStat.dwStart]
+	    mov	edx,gs:[CdRmDriveBuf.sStat.dwEnd]
+	    mov	fs:[ebx.AudStat.wStatus],ax
+	    mov	fs:[ebx.AudStat.dwStart],ecx
+	    mov	fs:[ebx.AudStat.dwEnd],edx
+
+	    pop	ebx				; FS:EBX = device request
+	    mov	fs:[ebx.IOCTLRW.wStatus],100h	; done
+	    or	fs:[ebx.IOCTLRW.wStatus],bp	; busy?
+	    jmp	@@return
+
+	  .endif
+	  pop	ebx				; FS:EBX = device request
+	.elseif	fs:[ebx.IOCTLRW.bCmd] == 0Ch	; IOCTL WRITE
+	  push	ebx
+	  movzx	eax,fs:[ebx.IOCTLRW.wBufOff]
+	  movzx	ebx,fs:[ebx.IOCTLRW.wBufSeg]
+	  shl	ebx,4
+	  add	ebx,eax				; FS:EBX = write request
+
+	  .if	byte ptr fs:[ebx] == 3		; Audio Channel Control
+	    mov	eax, dword ptr fs:[ebx.AudInfo.Info]
+	    mov	edx, dword ptr fs:[ebx.AudInfo.Info+4]
+	    mov	dword ptr gs:[CdRmDriveBuf.sInfo.Info],eax
+	    mov	dword ptr gs:[CdRmDriveBuf.sInfo.Info+4],edx
+	  .elseif byte ptr fs:[ebx] == 0		; Eject Disc
+	    pop	ebx				; FS:EBX = device request
+	    jmp	@@failifbusy
+
+	  .endif
+	  pop	ebx				; FS:EBX = device request
+	.elseif fs:[ebx.IOCTLRW.bCmd] == 80h	; READ LONG
+@@failifbusy:
+	  ;bt	bp,9
+	  ;jnc	@@passthrough
+	  ;mov	fs:[ebx.IOCTLRW.wStatus],8202h	; error, busy, code=2=not ready
+	  ;jmp	@@return
+
+	.elseif fs:[ebx.IOCTLRW.bCmd] == 82h	; READ LONG PREFETCH
+	  jmp	@@failifbusy
+	.elseif fs:[ebx.IOCTLRW.bCmd] == 83h	; SEEK
+	  jmp	@@failifbusy
+
+	.elseif fs:[ebx.IOCTLRW.bCmd] == 84h	; PLAY AUDIO
+	  mov	eax,fs:[ebx.PlayReq.dwStart]
+	  .if	fs:[ebx.PlayReq.bAMode]		; RedBook?
+	   call	redbook2hsg
+	  .endif
+	  mov	edx,fs:[ebx.PlayReq.dwSectors]
+	  add	edx,eax
+	  mov	gs:[CdRmDriveBuf.sStat.wStatus],0
+	  mov	gs:[CdRmDriveBuf.sStat.dwStart],eax
+	  mov	gs:[CdRmDriveBuf.sStat.dwEnd],edx
+	  mov	gs:[CdRmDriveBuf.sReq.dwStart],eax	; start reading here
+	  bts	gs:[CdRmDriveBuf.wStatus],9		; we're busy now!
+	  mov	gs:[CdRmDriveBuf.dwBufPos],size CdRmDriveBuf ; force refill
+	  mov	fs:[ebx.PlayReq.wStatus],300h		; done and busy
+	  jmp	@@return
+
+	.elseif fs:[ebx.IOCTLRW.bCmd] == 85h	; STOP AUDIO
+	  btr	gs:[CdRmDriveBuf.wStatus],9
+	  jnc	@F
+	  mov	eax,gs:[CdRmDriveBuf.sReq.dwStart]
+	  bts	gs:[CdRmDriveBuf.sStat.wStatus],0	; paused
+	  jmp	@@setresume
+@@:
+	  xor	eax,eax
+	  btr	gs:[CdRmDriveBuf.sStat.wStatus],ax	; paused
+	  mov	gs:[CdRmDriveBuf.sStat.dwEnd],eax
+@@setresume:
+	  mov	gs:[CdRmDriveBuf.sStat.dwStart],eax	; (un)set resume point
+	  mov	fs:[ebx.PlayReq.wStatus],100h		; done, not busy
+	  jmp	@@return
+
+	.elseif fs:[ebx.IOCTLRW.bCmd] == 88h	; RESUME AUDIO
+	  btr	gs:[CdRmDriveBuf.sStat.wStatus],0	; paused
+	  jnc	@F
+	  mov	eax,gs:[CdRmDriveBuf.sStat.dwStart]	; get resume point
+	  bts	gs:[CdRmDriveBuf.wStatus],9		; playing
+	  mov	gs:[CdRmDriveBuf.sReq.dwStart],eax
+	  mov	gs:[CdRmDriveBuf.dwBufPos],size CdRmDriveBuf ; force refill
+	  mov	fs:[ebx.PlayReq.wStatus],100h		; done, not busy
+	  jmp	@@return
+
+@@:
+	  mov	fs:[ebx.IOCTLRW.wStatus],8002h	; error, code=2=not ready
+	  or	fs:[ebx.IOCTLRW.wStatus],bp	; busy?
+	  jmp	@@return
+
+	.endif
+
+@@callthrough:
+	bt	bp,9
+	jnc	@@passthrough	; return normally and don't set busy bit
+
+	; create a new IRET frame resulting in a return to int2f_setbusy
+	sub	es:[edi.RMCS.rSP],6
+	mov	eax,cs:[dwSetBusyCB]
+	mov	bx,[esi+4]	; get flags
+	mov	[esi-6],eax
+	mov	[esi-2],bx
+	jmp	@@passthrough
+
+@@return:
+	lodsd			; get return address from stack
+	add	es:[edi.RMCS.rSP],6
+	btr	es:[edi.RMCS.rFlags],0	; clear carry (pretend we called driver)
+	jmp	@F
+@@passthrough:
+	mov	eax,cs:[dwOldInt2F]
+@@:
+	mov	es:[edi.RMCS.rCSIP],eax
+	iretd
+int2f_handler	endp
+
+int2f_setbusy	proc
+	; last stop on the return path from the old int 2F handler, to set the
+	; busy bit in a device IOCTL request if needed
+
+	mov	fs,cs:[wRmMemSel]
+	movzx	eax,es:[edi.RMCS.rBX]
+	movzx	ebx,es:[edi.RMCS.rES]
+	shl	ebx,4
+	add	ebx,eax				; FS:EBX = device request
+
+	bts	fs:[ebx.IOCTLRW.wStatus],9	; busy
+
+	lodsd			; get return address from stack
+	add	es:[edi.RMCS.rSP],6
+	mov	es:[edi.RMCS.rCSIP],eax
+	iretd
+int2f_setbusy	endp
+endif
 
 _TEXT	ends
 
