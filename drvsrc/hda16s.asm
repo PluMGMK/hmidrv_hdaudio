@@ -57,7 +57,7 @@ RMCS ends
 DEVNAME		equ 
 DEVSTOENUMERATE	equ 10h
 ?DEBUGLOG	equ 1
-?CDAUDIO		equ 1
+?CDAUDIO	equ 1
 
 _TEXT	segment	use32
 	assume	ds:nothing,es:nothing,gs:nothing,fs:_TEXT
@@ -135,6 +135,7 @@ hdareg_seg	label	word
 		dd 0
 hdareg_linaddr	dd 0
 
+dwCorbDpmiHdl	label	dword	; these two dwords will never both be needed
 xmsentry	label	dword
 xmsentry_ip	dw 0
 xmsentry_cs	dw 0
@@ -151,6 +152,7 @@ dwLastFillEAX	dd 0		; Value returned in EAX at last call to timer function
 dwAuxSelHdl	label	dword
 wAuxSel		dw 0
 wAuxHdl		dw 0
+dwAuxDpmiHdl	dd 0
 
 firststreamoff	dd 0
 
@@ -311,7 +313,8 @@ endif
 ; Bit 4 = Sound paused
 ; Bit 5 = Sound temporarily stopped (e.g. for setting rate)
 ; Bit 6 = CD Audio possible
-statusword	dw 0
+; Bit 7 = XMS needed (linear addresses != physical)
+statusword	dw 1 SHL 7
 ; bitmap representing rates supported by the currently-selected DAC node
 ratebitmap	dw 0
 
@@ -566,6 +569,26 @@ endif
 	and	[codec],0Fh
 
 if	?DEBUGLOG
+	invoke	printtolog, CStr("Checking if paging is enabled...",0Dh,0Ah)
+endif
+	mov	eax,cs
+	test	eax,3
+	jnz	@F
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Operating in Ring 0, checking CR0...",0Dh,0Ah)
+endif
+	mov	eax,cr0
+	bt	eax,1Fh	; CR0.PG
+	jc	@F
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Paging is off!",0Dh,0Ah)
+endif
+	btr	[statusword],7
+
+@@:
+if	?DEBUGLOG
 	invoke	printtolog, CStr("Allocating CORB/RIRB buffer...",0Dh,0Ah)
 endif
 	mov	eax,0C20h	; 1 kiB for CORB + 2 kiB for RIRB + 32 bytes for BDL
@@ -576,6 +599,22 @@ if	?DEBUGLOG
 endif
 	mov	[dwCorbSelHdl],eax
 	mov	[dwCorbPhys],edx
+	.if	!(eax & 0FFFF0000h)
+	   mov	[dwCorbDpmiHdl],ebx
+if	?DEBUGLOG
+	   invoke printtolog, CStr("CORB/RIRB physical address == ")
+	   ror	edx,10h
+	   invoke printbinword,dx
+	   ror	edx,10h
+	   invoke printbinword,dx
+	   invoke printtolog, CStr("b",0Dh,0Ah,"DPMI handle == ")
+	   ror	ebx,10h
+	   invoke printbinword,bx
+	   ror	ebx,10h
+	   invoke printbinword,bx
+	   invoke printtolog, CStr("b",0Dh,0Ah)
+endif
+	.endif
 
 	push	es
 	call	get_hdareg_ptr
@@ -600,9 +639,10 @@ endif
 
 @@hda_running:
 if	?DEBUGLOG
-	invoke	printtolog, CStr("GCTL == ")
-	invoke	printbinword,word ptr es:[edi+2].HDAREGS.gctl
-	invoke	printbinword,word ptr es:[edi].HDAREGS.gctl
+	invoke	printtolog, CStr("GCAP == ")
+	invoke	printbinword,es:[edi].HDAREGS.gcap
+	invoke	printtolog, CStr("b",0Dh,0Ah,"Version == ")
+	invoke	printbinword,word ptr es:[edi].HDAREGS.vminor
 	invoke	printtolog, CStr("b",0Dh,0Ah)
 endif
 	; make sure interrupts are off until we set up IRQ...
@@ -1245,6 +1285,7 @@ endif
 	test	eax,eax
 	jz	@F
 
+	mov	ebx,[dwCorbDpmiHdl]
 	call	free_dma_buf
 	mov	[dwCorbPhys],eax
 	mov	[dwCorbSelHdl],eax
@@ -1464,6 +1505,7 @@ endif
 	call	alloc_dma_buf
 	jc	@@skip
 	mov	[dwAuxSelHdl],eax
+	mov	[dwAuxDpmiHdl],ebx
 if	?DEBUGLOG
 	invoke	printtolog, CStr("128-byte-aligned aux buffer created",0Dh,0Ah)
 endif
@@ -1944,6 +1986,7 @@ if	?DEBUGLOG
 	invoke	printtolog, CStr("Freeing aux buffer...",0Dh,0Ah)
 endif
 	xchg	eax,[dwAuxSelHdl]
+	mov	ebx,[dwAuxDpmiHdl]
 	call	free_dma_buf
 if	?DEBUGLOG
 	invoke	printtolog, CStr("Done",0Dh,0Ah)
@@ -2328,7 +2371,11 @@ get_subnodes	endp
 
 ; Allocate a 128-byte-aligned DMA buffer in Extended Memory
 ; Takes size in EAX, returns XMS handle and selector in upper and lower halves of EAX, and physical address in EDX.
+; If the handle in the upper half of EAX is returned as zero, then check EBX instead for a DPMI memory block handle!
 alloc_dma_buf	proc near
+	bt	[statusword],7
+	jnc	@@use_dpmi
+
 	push	ebp
 	sub	esp,size RMCS
 	mov	ebp,esp
@@ -2482,11 +2529,66 @@ endif
 @@retpoint_fail:
 	stc
 	jmp	@@retpoint
+
+
+; If we're in Ring 0 with no paging, we don't need to go through XMS to get 
+; a physical address. Just use what the DOS extender provides.
+@@use_dpmi:
+	push	ecx
+	push	edi
+	push	esi
+
+	push	eax		; save size for later
+	add	eax,7Fh			; ensure enough room for 128-byte alignment
+	mov	cx,ax
+	mov	ebx,eax
+	shr	ebx,10h
+	mov	ax,0501h	; allocate memory block
+	int	31h
+	jc	@@dpmiallocfail
+
+	xchg	di,[esp]	; get the size back and store the DPMI handle
+	xchg	si,[esp+2]	; get the size back and store the DPMI handle
+	xor	eax,eax
+	add	cx,7Fh
+	adc	bx,0
+	and	cl,80h			; ensure 128-byte alignment
+	push	bx
+	push	cx
+	call	alloc_phys_sel
+	jc	@@dpmiselfail
+	pop	edx		; get the address
+
+	pop	ebx		; get the DPMI handle
+@@dpmi_retpoint:
+	pop	esi
+	pop	edi
+	pop	ecx
+	ret
+
+@@dpmiallocfail:
+if	?DEBUGLOG
+	invoke	printtolog, CStr("DPMI memory allocation failed",0Dh,0Ah)
+endif
+	pop	eax		; get the size back
+	jmp	@@dpmifail
+@@dpmiselfail:
+if	?DEBUGLOG
+	invoke	printtolog, CStr("DPMI selector allocation failed",0Dh,0Ah)
+endif
+	pop	ebx		; get the DPMI handle
+@@dpmifail:
+	stc
+	jmp	@@dpmi_retpoint
 alloc_dma_buf	endp
 
 ; Free a 128-byte-aligned DMA buffer in Extended Memory
 ; Takes XMS handle and selector in upper and lower halves of EAX, respectively.
+; If needed, takes DPMI handle in EBX.
 free_dma_buf	proc near
+	bt	[statusword],7
+	jnc	@@use_dpmi
+
 	push	ebp
 	sub	esp,size RMCS
 	mov	ebp,esp
@@ -2522,6 +2624,24 @@ free_dma_buf	proc near
 @@:
 	lea	esp,[ebp+size RMCS]
 	pop	ebp
+	ret
+
+
+@@use_dpmi:
+	push	esi
+	push	edi
+
+	mov	bx,ax			; get selector
+	call	free_selector
+
+	push	ebx
+	pop	di
+	pop	si
+	mov	ax,0502h		; free memory block
+	int	31h
+
+	pop	edi
+	pop	esi
 	ret
 free_dma_buf	endp
 
@@ -2619,7 +2739,7 @@ endif
 	   jnz	@F
 
 if	?DEBUGLOG
-	   invoke	printtolog, CStr("Reading BAR0...",0Dh,0Ah)
+	   ;invoke	printtolog, CStr("Reading BAR0...",0Dh,0Ah)
 endif
 	   mov	ax,0B10Ah	; read configuration dword
 	   mov	di,10h		; BAR0 (lower dword)
@@ -2633,12 +2753,12 @@ endif
 	   and	cl,0F0h		; prevent off-by-four errors and the like
 	   mov	ebx,ecx
 	   shr	ebx,10h		; get the full address into BX:CX
-if	?DEBUGLOG
-	 invoke	printtolog, CStr("BAR0 == ")
-	 invoke	printbinword,bx
-	 invoke	printbinword,cx
-	 invoke	printtolog, CStr("b",0Dh,0Ah)
-endif
+;if	?DEBUGLOG
+;	 invoke	printtolog, CStr("BAR0 == ")
+;	 invoke	printbinword,bx
+;	 invoke	printbinword,cx
+;	 invoke	printtolog, CStr("b",0Dh,0Ah)
+;endif
 	   xor	esi,esi
 	   mov	edi,size HDAREGS
 	   call	map_physmem
@@ -2654,12 +2774,12 @@ endif
 	   mov	ebx,ecx
 	   shr	ebx,10h
 	 .endif
-if	?DEBUGLOG
-	 invoke	printtolog, CStr("hdareg_linaddr == ")
-	 invoke	printbinword,bx
-	 invoke	printbinword,cx
-	 invoke	printtolog, CStr("b",0Dh,0Ah)
-endif
+;if	?DEBUGLOG
+;	 invoke	printtolog, CStr("hdareg_linaddr == ")
+;	 invoke	printbinword,bx
+;	 invoke	printbinword,cx
+;	 invoke	printtolog, CStr("b",0Dh,0Ah)
+;endif
 
 if	?DEBUGLOG
 	 invoke	printtolog, CStr("Allocating selector...",0Dh,0Ah)
@@ -2729,6 +2849,9 @@ map_physmem	proc near	uses eax edx esi edi
 	; SI:DI = size (preserved after call)
 	; returns linear address in BX:CX
 
+	bt	[statusword],7
+	jnc	@F			; return the phys address as linear
+
 	; figure out which pages need to be mapped, and how many
 	mov	ax,bx
 	shl	eax,10h
@@ -2756,17 +2879,21 @@ map_physmem	proc near	uses eax edx esi edi
 	jc	@F
 
 	and	edx,0FFFh		; get back the offset into the page
-	add	ecx,edx
+	or	ecx,edx
 	clc
 @@:
 	ret
 map_physmem	endp
 
 unmap_physmem	proc near
+	bt	[statusword],7
+	jnc	@F			; this is a no-op
+
 	; BX:CX = linear address
 	and	cx,0F000h		; address passed here may not be page-aligned...
 	mov	ax,801h
 	int	31h
+@@:
 	ret
 unmap_physmem	endp
 
