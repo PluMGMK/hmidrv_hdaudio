@@ -170,7 +170,7 @@ irqvec		db 0		; the actual interrupt vector corresponding to our IRQ
 oldpciirq	db 0		; the interrupt line of the controller before we set it
 
 if	?CDAUDIO
-?CDBUFSIZE	equ 20		; size in sectors
+?CDBUFSIZE	equ 8		; size in sectors
 ?CDVOLCTL	equ 0
 
 IOCTLRW	struc			; IOCTL read/write request
@@ -180,7 +180,6 @@ IOCTLRW	struc			; IOCTL read/write request
 	wStatus	dw ?
 	_resd	dq ?
 	_resd1	db ?		; media descriptor byte = 0 for MSCDEX
-	;lpBuf	label dword
 	wBufOff	dw ?
 	wBufSeg	dw ?
 	wCount	dw ?
@@ -195,7 +194,6 @@ ReadL	struc
 	wStatus	dw ?
 	_resd	dq ?
 	bAMode	db ?		; addressing mode (RedBook / High Sierra)
-	;lpBuf	label dword
 	wBufOff	dw ?
 	wBufSeg	dw ?
 	wSectors dw ?
@@ -281,6 +279,7 @@ CdRmDriveBuf	struc
 	sStat	AudStat<?>
 	sQChan	QInfo<?>
 	wStatus	dw ?		; set bit 9 to indicate we're playing
+				; also bit 0 to indicate prefetch possible...
 	dwBufPos dd ?
 	align	4		; optimize performance for reading dwords
 	Samples	db (?CDBUFSIZE * 930h) dup (?)
@@ -1340,6 +1339,13 @@ if	?DEBUGLOG
 endif
 	mov	bh,FormatHiBytes[ebx-1]
 @@setformatlobyte:
+if	?CDAUDIO
+	mov	bl,bh
+	shr	bl,3
+	and	bl,7		; three middle bits = multiplier
+	inc	bl		; convert zero to one, etc.
+	mov	[bCdDivider],bl
+endif
 	mov	bl,FORMATLOBYTE
 if	?DEBUGLOG
 	invoke	printbinword,bx
@@ -1396,7 +1402,6 @@ drv_setaction	endp
 drv_start	proc near
 if	?DEBUGLOG
 	invoke	openlog, CStr("HDA_STRT.LOG"),0
-	;call	logtostderr
 	invoke	printtolog, CStr("checking if driver is initialized...",0Dh,0Ah)
 endif
 	bt	[statusword],0
@@ -1424,7 +1429,6 @@ endif
 
 	cmp	[soft_divider],1
 	jna	@F
-	;jmp	@F
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("software divider in operation (")
@@ -1579,6 +1583,7 @@ endif
 
 	mov	es:[CdRmHeadBuf.sInfo.bCode],6		; device status
 
+	push	ebp
 	.while	si
 if	?DEBUGLOG
 	  invoke printtolog, CStr("checking drive ")
@@ -1606,17 +1611,20 @@ if	?DEBUGLOG
 	  invoke printtolog, CStr("drive status request sent...",0Dh,0Ah)
 endif
 	  mov	eax,es:[CdRmHeadBuf.sInfo.dwStat]
-	  bt	eax,2		; supports raw reading?
+	  bt	eax,2
 	  jnc	@@next
 if	?DEBUGLOG
 	  invoke printtolog, CStr("supports raw reading",0Dh,0Ah)
 endif
-;	  bt	eax,7		; supports prefetching?
-;	  jnc	@@next
-;if	?DEBUGLOG
-;	  invoke printtolog, CStr("supports prefetching",0Dh,0Ah)
-;endif
+	  xor	ebp,ebp
+	  bt	eax,7
+	  jnc	@F
+if	?DEBUGLOG
+	  invoke printtolog, CStr("supports prefetching",0Dh,0Ah)
+endif
+	  mov	ebp,1
 
+@@:
 	  mov	ax,100h		; allocate DOS memory block
 	  mov	bx,(size CdRmDriveBuf + 0Fh) SHR 4
 	  int	31h
@@ -1653,6 +1661,7 @@ endif
 
 	  mov	ax,es:[CdRmHeadBuf.sRmCall.rCX]
 	  mov	gs:[CdRmDriveBuf.bDrive],al
+	  mov	gs:[CdRmDriveBuf.wStatus],bp	; save prefetch ability
 
 	  mov	gs:[CdRmDriveBuf.sReq.bLen],size ReadL
 	  ;mov	gs:[CdRmDriveBuf.sReq.bCmd],80h		; READ LONG
@@ -1697,6 +1706,7 @@ endif
 	  inc	es:[CdRmHeadBuf.sRmCall.rCX]
 	  dec	si
 	.endw
+	pop	ebp
 
 @@cddone:
 	pop	gs
@@ -2295,6 +2305,9 @@ endif
 	call	send_cmd_wait
 
 	pop	eax
+if	?CDAUDIO
+	and	si,not 11111b	; don't support any rates slower than 44100
+endif
 @@retpoint:
 	ret
 find_dac_node	endp
@@ -3048,13 +3061,10 @@ fillcdbuf	proc near
 	sub	ecx,gs:[CdRmDriveBuf.sReq.dwStart]
 	.if	ecx > ?CDBUFSIZE
 	   mov	ecx,?CDBUFSIZE
-	.else
+	.elseif	ecx < ?CDBUFSIZE
 	   ; clear out the buffer since we'll only partially fill it
-	   ;call	logtostderr
 	   push	gs
 	   pop	es
-
-	   ;invoke printtolog,CStr("Clearing CD Audio buffer...",0Dh,0Ah)
 
 	   push	ecx
 	   mov	ecx,(size CdRmDriveBuf.Samples) SHR 2
@@ -3063,9 +3073,6 @@ fillcdbuf	proc near
 	   rep	stosd
 	   pop	ecx
 
-	   ;invoke printtolog,CStr("Done!",0Dh,0Ah)
-
-	   ;invoke closelog
 	   test	ecx,ecx
 	   jnz	@F
 
@@ -3092,12 +3099,19 @@ fillcdbuf	proc near
 	cmp	ecx,?CDBUFSIZE
 	jb	@@done
 
+	; check if driver advertised prefetch support
+	; if not, there is no point in doing READ LONG PREFETCH, as it will just
+	; seek, to a location which has already been reached by the above read.
+	bt	gs:[CdRmDriveBuf.wStatus],0
+	jnc	@F
+
 	; encourage MSCDEX to prefetch the next N sectors so as not to block
 	mov	gs:[CdRmDriveBuf.sReq.bCmd],82h	; READ LONG PREFETCH
 	mov	ax,0302h		; call real-mode interrupt procedure
 	mov	cx,bx
 	int	31h
 
+@@:
 	; update Q-Channel info
 	mov	ax,gs:[CdRmDriveBuf.sReq.wBufSeg]
 	mov	bx,[wCdRmBufSeg]
@@ -3135,6 +3149,9 @@ mixincdaudio	proc near	uses gs esi ebx eax edx
 	mov	gs,[wCdRmBufSel]
 	push	ebp
 
+	test	ecx,ecx
+	jz	@@done				; prevent hangs / crashes!
+
 @@driveloop:
 	mov	ax,gs:[CdRmDriveBuf.wNextS]	; or wFirstS for head buffer
 	test	ax,ax				; end of linked list?
@@ -3143,12 +3160,6 @@ mixincdaudio	proc near	uses gs esi ebx eax edx
 
 	bt	gs:[CdRmDriveBuf.wStatus],9	; audio playing?
 	jnc	@@driveloop			; if not, move to next drive
-	;call	logtostderr
-	;invoke	printtolog, CStr("Trying drive buffer at GS=")
-	;invoke	printbinword,ax
-	;invoke	printtolog, CStr("b, with status word ")
-	;invoke	printbinword,gs:[CdRmDriveBuf.wStatus]
-	;invoke	printtolog, CStr("b...",0Dh,0Ah)
 
 	mov	bl,gs:CdRmDriveBuf.sInfo.Info.bVolume[2]
 	mov	bh,bl	; BX = multiplication factor for right channel
@@ -3179,10 +3190,12 @@ if	?CDVOLCTL
 	ror	eax,10h	; move to right channel
 	ror	edx,10h	; move to right channel
 	ror	ebx,10h	; move to right channel
+
 	imul	bx
 	shld	dx,ax,1	; undo the SHR we did on BX earlier
 	bt	ax,0Eh
 	adc	dx,0	; increment DX if second-MSB of AX set (i.e. round up)
+
 	ror	edx,10h	; back to left channel
 	ror	ebx,10h	; back to left channel
 else
@@ -3222,7 +3235,6 @@ endif
 	mov	gs:[CdRmDriveBuf.dwBufPos],esi
 	pop	edi
 	pop	ecx
-	;invoke	closelog
 	jmp	@@driveloop
 
 @@done:
@@ -3382,6 +3394,7 @@ timer_handler	proc far
 	;call	logtostderr
 
 	lgs	esi,[lpAuxBufFilled]
+	and	esi,not 3	; ensure we're copying full dwords
 	mov	[dwLastFillEAX],eax
 	mov	ecx,eax
 	sub	ecx,esi
@@ -3409,7 +3422,6 @@ timer_handler	proc far
 
 	mov	edx,ecx
 	and	esi,not 3	; ensure we're copying full dwords
-	and	edi,not 3	; ensure we're copying full dwords
 	;call	announcecopy
 
 if	?CDAUDIO
@@ -3448,6 +3460,7 @@ endif
 	push	edx
 	push	eax
 
+	and	esi,not 3	; ensure we're copying full dwords
 	shr	ecx,2		; convert to dwords
 	push	gs
 	pop	es		; ES points to aux buffer
@@ -3463,7 +3476,6 @@ endif
 
 	mov	edx,ecx
 	and	esi,not 3	; ensure we're copying full dwords
-	and	edi,not 3	; ensure we're copying full dwords
 	;call	announcecopy
 
 if	?CDAUDIO
@@ -3656,10 +3668,10 @@ int2f_handler	proc
 	  pop	ebx				; FS:EBX = device request
 	.elseif fs:[ebx.IOCTLRW.bCmd] == 80h	; READ LONG
 @@failifbusy:
-	  ;bt	bp,9
-	  ;jnc	@@passthrough
-	  ;mov	fs:[ebx.IOCTLRW.wStatus],8202h	; error, busy, code=2=not ready
-	  ;jmp	@@return
+	  bt	bp,9
+	  jnc	@@passthrough
+	  mov	fs:[ebx.IOCTLRW.wStatus],8202h	; error, busy, code=2=not ready
+	  jmp	@@return
 
 	.elseif fs:[ebx.IOCTLRW.bCmd] == 82h	; READ LONG PREFETCH
 	  jmp	@@failifbusy

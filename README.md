@@ -13,7 +13,7 @@ Experimental support is also included for mixing CD Audio into the stream, by ho
 
 ## `TODO` list
 * Figure out cause of skipping in looping sounds, and eliminate it
-* Fix random hangs with CD Audio and generally improve its performance
+* Likewise figure out and eliminate cause of stale data in CD Audio buffer(s), resulting in random snippets of audio intervening every 105 ms or so
 * Write a detector (for `HMIDET.386`) to complement the driver
 * Expand the build/installation process so it can be run from modern operating systems and/or DOS without QBASIC installed
 * Implement support for volume control of CD Audio even when the drive doesn't have built-in audio capability
