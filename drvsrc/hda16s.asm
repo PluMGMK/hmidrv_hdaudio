@@ -108,14 +108,14 @@ IRQList		dw 2,5,7,0Ah,-1	; same ones SB16 can use...
 ; List from HDA spec, in order from R1-R7 (i.e. reduced to only those that'll fit inside a word...)
 RateList	dw 8000,11025,16000,22050,32000,44100,48000,-1
 NUM_RATES	equ ($ - RateList) SHR 1
-FormatHiBytes	db 00000101b	; TYPE=0=PCM, BASE=0=48kHz, MULT=000=1, DIV=101=6
-		db 01000011b	; TYPE=0=PCM, BASE=1=44.1kHz, MULT=000=1, DIV=011=4
-		db 00000010b	; TYPE=0=PCM, BASE=0=48kHz, MULT=000=1, DIV=010=3
-		db 01000001b	; TYPE=0=PCM, BASE=1=44.1kHz, MULT=000=1, DIV=001=2
-		db 00001010b	; TYPE=0=PCM, BASE=0=48kHz, MULT=001=2, DIV=010=3
-		db 01000000b	; TYPE=0=PCM, BASE=1=44.1kHz, MULT=000=1, DIV=000=1
-		db 00000000b	; TYPE=0=PCM, BASE=0=48kHz, MULT=000=1, DIV=000=1
-FORMATLOBYTE	equ 0010001b	; BITS=001=16, CHAN=0001=2
+FormatHiBytes	db 00000101b ; TYPE=0=PCM, BASE=0=48kHz, MULT=000=1, DIV=101=6
+		db 01000011b ; TYPE=0=PCM, BASE=1=44.1kHz, MULT=000=1, DIV=011=4
+		db 00000010b ; TYPE=0=PCM, BASE=0=48kHz, MULT=000=1, DIV=010=3
+		db 01000001b ; TYPE=0=PCM, BASE=1=44.1kHz, MULT=000=1, DIV=001=2
+		db 00001010b ; TYPE=0=PCM, BASE=0=48kHz, MULT=001=2, DIV=010=3
+		db 01000000b ; TYPE=0=PCM, BASE=1=44.1kHz, MULT=000=1, DIV=000=1
+		db 00000000b ; TYPE=0=PCM, BASE=0=48kHz, MULT=000=1, DIV=000=1
+FORMATLOBYTE	equ 0010001b ; BITS=001=16, CHAN=0001=2
 
 ; Basic parameters set by calling application
 wPort		label	word	; for the "port":
@@ -172,7 +172,7 @@ irqvec		db 0		; the actual interrupt vector corresponding to our IRQ
 oldpciirq	db 0		; the interrupt line of the controller before we set it
 
 if	?CDAUDIO
-?CDBUFSIZE	equ 8		; size in sectors
+?CDBUFSIZE	equ 10h		; size in sectors
 ?CDVOLCTL	equ 0
 
 IOCTLRW	struc			; IOCTL read/write request
@@ -283,7 +283,7 @@ CdRmDriveBuf	struc
 	wStatus	dw ?		; set bit 9 to indicate we're playing
 				; also bit 0 to indicate prefetch possible...
 	dwBufPos dd ?
-	align	4		; optimize performance for reading dwords
+	align	10h		; make it its own segment...
 	Samples	db (?CDBUFSIZE * 930h) dup (?)
 CdRmDriveBuf	ends
 
@@ -1842,6 +1842,7 @@ drv_start	endp
 drv_stop	proc near
 if	?DEBUGLOG
 	invoke	openlog, CStr("HDA_STOP.LOG"),0
+	;invoke	logtostderr
 	invoke	printtolog, CStr("checking if driver is initialized...",0Dh,0Ah)
 endif
 	bt	[statusword],0
@@ -1860,6 +1861,24 @@ endif
 	jnc	@F
 
 if	?DEBUGLOG
+;	invoke	printtolog, CStr("fillcdbuf last ran at ")
+;	invoke	printbinword,[lasttimertick_hi]
+;	invoke	printbinword,[lasttimertick_lo]
+;	invoke	printtolog, CStr("b ticks;",0Dh,0Ah)
+;
+;	invoke	printtolog, CStr("i.e. ")
+;	xor	ah,ah		; GET SYSTEM TIME
+;	int	1Ah
+;	sub	dx,[lasttimertick_lo]
+;	sbb	cx,[lasttimertick_hi]
+;	.if	al	; Midnight
+;	   add	dx,0B0h
+;	   adc	cx,18h
+;	.endif
+;	invoke	printbinword,cx
+;	invoke	printbinword,dx
+;	invoke	printtolog, CStr("b ticks ago",0Dh,0Ah)
+
 	invoke	printtolog, CStr("freeing callbacks...",0Dh,0Ah)
 endif
 	mov	ax,200h		; get real mode interrupt vector
@@ -2632,6 +2651,16 @@ free_dma_buf	proc near
 	push	edi
 
 	mov	bx,ax			; get selector
+if	?DEBUGLOG
+	pushad
+	mov	ax,6			; get segment base address
+	int	31h
+	invoke	printtolog, CStr("free_dma_buf: base address == ")
+	invoke	printbinword,cx
+	invoke	printbinword,dx
+	invoke	printtolog, CStr("b",0Dh,0Ah)
+	popad
+endif
 	call	free_selector
 
 	push	ebx
@@ -2833,6 +2862,12 @@ free_phys_sel	proc near
 	int	31h
 	jc	@F
 
+if	?DEBUGLOG
+	invoke	printtolog, CStr("free_phys_sel: base address == ")
+	invoke	printbinword,cx
+	invoke	printbinword,dx
+	invoke	printtolog, CStr("b",0Dh,0Ah)
+endif
 	xchg	bx,cx
 	xchg	cx,dx			; save the selector in DX
 	call	unmap_physmem
@@ -3104,9 +3139,16 @@ drv_reset	proc near
 drv_reset	endp
 
 handle_cmei	proc near
+if	?DEBUGLOG
+	invoke	logtostderr
+endif
 	invoke	printstderr, CStr(33o,"[31m","CORB Memory Error, attempting reset...",33o,"[37m",0Dh,0Ah)
 	call	drv_reset
 	invoke	printstderr, CStr(33o,"[31m","Reset complete",33o,"[37m",0Dh,0Ah)
+if	?DEBUGLOG
+	call	wait_timerch2
+	invoke	closelog
+endif
 	ret
 handle_cmei	endp
 
@@ -3142,9 +3184,16 @@ stream_reset	proc near
 stream_reset	endp
 
 handle_dese	proc near
+if	?DEBUGLOG
+	invoke	logtostderr
+endif
 	invoke	printstderr, CStr(33o,"[31m","Stream Descriptor Error, attempting reset...",33o,"[37m",0Dh,0Ah)
 	call	stream_reset
 	invoke	printstderr, CStr(33o,"[31m","Stream Reset complete",33o,"[37m",0Dh,0Ah)
+if	?DEBUGLOG
+	call	wait_timerch2
+	invoke	closelog
+endif
 	ret
 handle_dese	endp
 
@@ -3188,7 +3237,8 @@ fillcdbuf	proc near
 	sub	ecx,gs:[CdRmDriveBuf.sReq.dwStart]
 	.if	ecx > ?CDBUFSIZE
 	   mov	ecx,?CDBUFSIZE
-	.elseif	ecx < ?CDBUFSIZE
+	.endif
+	;.elseif	ecx < ?CDBUFSIZE
 	   ; clear out the buffer since we'll only partially fill it
 	   push	gs
 	   pop	es
@@ -3207,7 +3257,7 @@ fillcdbuf	proc near
 	   btr	gs:[CdRmDriveBuf.wStatus],9	; busy bit = playing
 	   jmp	@@done
 @@:
-	.endif
+	;.endif
 	mov	gs:[CdRmDriveBuf.sReq.wSectors],cx
 
 	push	ss
@@ -3215,6 +3265,10 @@ fillcdbuf	proc near
 
 	push	ecx
 	mov	gs:[CdRmDriveBuf.sReq.bCmd],80h	; READ LONG
+	mov	gs:[CdRmDriveBuf.sReq.wBufOff],CdRmDriveBuf.Samples
+	mov	gs:[CdRmDriveBuf.sReq.bRMode],1		; raw
+	mov	gs:[CdRmDriveBuf.sReq.bISize],0		; no interleave
+	mov	gs:[CdRmDriveBuf.sReq.bISkip],0		; no interleave
 	mov	edi,ebp
 	xor	bx,bx
 	mov	cx,bx
@@ -3222,6 +3276,16 @@ fillcdbuf	proc near
 	int	31h
 	pop	ecx
 
+if	?DEBUGLOG
+	bt	gs:[CdRmDriveBuf.sReq.wStatus],15
+	jnc	@F
+	invoke	logtostderr
+	invoke	printbinword,gs:[CdRmDriveBuf.sReq.wStatus]
+	int	3
+	invoke	closelog
+
+@@:
+endif
 	add	gs:[CdRmDriveBuf.sReq.dwStart],ecx
 	cmp	ecx,?CDBUFSIZE
 	jb	@@done
@@ -3241,7 +3305,7 @@ fillcdbuf	proc near
 @@:
 	; update Q-Channel info
 	mov	ax,gs:[CdRmDriveBuf.sReq.wBufSeg]
-	mov	bx,[wCdRmBufSeg]
+	mov	cx,[wCdRmBufSeg]
 
 	push	fs
 	mov	fs,[wCdRmBufSel]
@@ -3251,13 +3315,29 @@ fillcdbuf	proc near
 	mov	fs:[CdRmHeadBuf.sReq.wBufSeg],ax
 	pop	fs
 
-	mov	[ebp].RMCS.rES,bx
+	mov	[ebp].RMCS.rES,cx
 	mov	[ebp].RMCS.rBX,CdRmHeadBuf.sReq
 	mov	ax,0302h		; call real-mode interrupt procedure
-	mov	bx,cx
+	mov	cx,bx
 	int	31h
 
 @@done:
+; if	?DEBUGLOG
+; 	xor	ah,ah		; GET SYSTEM TIME
+; 	push	edx
+; 	int	1Ah
+; 	mov	[lasttimertick_lo],dx
+; 	mov	[lasttimertick_hi],cx
+; 	pop	edx
+; endif
+
+	; when the system is not in VM86 mode, the CD driver may carelessly
+	; mask IRQ0, effectively disabling our driver - counteract this here!
+	; (this had me scratching my head for over a week!)
+	in	al,21h
+	btr	ax,0		; unmask IRQ0 = timer
+	out	21h,al
+
 	mov	ebx,[ebp].RMCS.rEDX	; restore EBX
 	mov	ecx,[ebp].RMCS.rEBP	; restore ECX
 	mov	edi,[ebp].RMCS.rEDI	; restore EDI
@@ -3470,6 +3550,10 @@ irq_handler	proc
 	jmp	cs:[oldIRQhandler]
 irq_handler	endp
 
+;if	?DEBUGLOG
+;lasttimertick_lo	dw ?
+;lasttimertick_hi	dw ?
+;endif
 ; Called from the timer (16-bit stereo pseudo-DMA)
 ; Takes far pointer to DMA buffer in ES:[EDI]
 ; Returns the address at which we next want it filled in EAX,
