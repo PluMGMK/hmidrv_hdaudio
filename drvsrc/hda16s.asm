@@ -175,6 +175,9 @@ if	?CDAUDIO
 ?CDBUFSIZE	equ 10h		; size in sectors
 ?CDVOLCTL	equ 0
 
+CDSECTORSIZE	equ 930h	; a constant, defined in the Red Book standard
+CDBUFSIZEDWORDS	equ ?CDBUFSIZE * CDSECTORSIZE SHR 2
+
 IOCTLRW	struc			; IOCTL read/write request
 	bLen	db ?		; 3 for read, 12 for write
 	bUnit	db ?
@@ -283,8 +286,9 @@ CdRmDriveBuf	struc
 	wStatus	dw ?		; set bit 9 to indicate we're playing
 				; also bit 0 to indicate prefetch possible...
 	dwBufPos dd ?
+	dwBufEnd dd ?
 	align	10h		; make it its own segment...
-	Samples	db (?CDBUFSIZE * 930h) dup (?)
+	Samples	dd CDBUFSIZEDWORDS dup (?)
 CdRmDriveBuf	ends
 
 ; Pointer to head buffer
@@ -3238,26 +3242,24 @@ fillcdbuf	proc near
 	.if	ecx > ?CDBUFSIZE
 	   mov	ecx,?CDBUFSIZE
 	.endif
-	;.elseif	ecx < ?CDBUFSIZE
-	   ; clear out the buffer since we'll only partially fill it
-	   push	gs
-	   pop	es
 
-	   push	ecx
-	   mov	ecx,(size CdRmDriveBuf.Samples) SHR 2
-	   mov	edi,CdRmDriveBuf.Samples
-	   xor	eax,eax
-	   rep	stosd
-	   pop	ecx
+	push	gs
+	pop	es
 
-	   test	ecx,ecx
-	   jnz	@F
+	; fill the buffer with a well-known scratch pattern so we can check
+	; afterwards how much of it actually got filled in by the CD driver...
+	push	ecx
+	mov	ecx,CDBUFSIZEDWORDS
+	mov	edi,CdRmDriveBuf.Samples
+	mov	eax,0DEADBEEFh
+	rep	stosd
+	pop	ecx
 
+	.if	!ecx
 	   ; reset the "playing" status
 	   btr	gs:[CdRmDriveBuf.wStatus],9	; busy bit = playing
 	   jmp	@@done
-@@:
-	;.endif
+	.endif
 	mov	gs:[CdRmDriveBuf.sReq.wSectors],cx
 
 	push	ss
@@ -3286,9 +3288,46 @@ if	?DEBUGLOG
 
 @@:
 endif
-	add	gs:[CdRmDriveBuf.sReq.dwStart],ecx
-	cmp	ecx,?CDBUFSIZE
-	jb	@@done
+
+	push	gs
+	pop	es
+
+	; check for the scratch pattern...
+	push	edx
+	mov	ecx,CDBUFSIZEDWORDS
+	mov	edi,CdRmDriveBuf.Samples
+	mov	eax,0DEADBEEFh
+@@:
+	repne	scasd
+	mov	edx,ecx	; EDX = number of dwords with scratch pattern
+	jecxz	@F
+	repe	scasd	; make sure it's not a fluke...
+	jecxz	@F
+	jmp	@B	; we found more data after the scratch pattern
+@@:
+	lea	eax,[edx+1]
+	xor	edx,edx	; EAX:EDX = number of dwords with scratch pattern plus
+			; one since the driver may have filled a partial dword
+	mov	ecx,CDSECTORSIZE SHR 2
+	div	ecx	; EAX = number of full sectors with scratch pattern
+	.if	edx	; EDX = number of dwords in last non-full sector
+	   inc	eax	; round up the number of sectors
+	.endif
+	pop	edx
+	sub	eax,?CDBUFSIZE
+	neg	eax	; EAX = number of good sectors in buffer
+
+	imul	ecx,eax,CDSECTORSIZE
+	add	ecx,CdRmDriveBuf.Samples
+	mov	gs:[CdRmDriveBuf.dwBufEnd],ecx
+
+	push	ss
+	pop	es
+	mov	edi,ebp
+
+	add	gs:[CdRmDriveBuf.sReq.dwStart],eax
+	;cmp	ecx,?CDBUFSIZE
+	;jb	@@done
 
 	; check if driver advertised prefetch support
 	; if not, there is no point in doing READ LONG PREFETCH, as it will just
@@ -3381,7 +3420,7 @@ mixincdaudio	proc near	uses gs esi ebx eax edx
 	mov	ebp,ecx
 	mov	esi,gs:[CdRmDriveBuf.dwBufPos]
 @@loadloop:
-	.if	esi >= size CdRmDriveBuf
+	.if	esi >= gs:[CdRmDriveBuf.dwBufEnd]
 	   call	fillcdbuf
 	   mov	esi,CdRmDriveBuf.Samples
 	   ; TODO: read Q-channel to see how to arrange the samples
@@ -3901,7 +3940,8 @@ int2f_handler	proc
 	  mov	gs:[CdRmDriveBuf.sStat.dwEnd],edx
 	  mov	gs:[CdRmDriveBuf.sReq.dwStart],eax	; start reading here
 	  bts	gs:[CdRmDriveBuf.wStatus],9		; we're busy now!
-	  mov	gs:[CdRmDriveBuf.dwBufPos],size CdRmDriveBuf ; force refill
+	  mov	gs:[CdRmDriveBuf.dwBufPos],0
+	  mov	gs:[CdRmDriveBuf.dwBufEnd],0		; force refill
 	  mov	fs:[ebx.PlayReq.wStatus],300h		; done and busy
 	  jmp	@@return
 
@@ -3926,7 +3966,8 @@ int2f_handler	proc
 	  mov	eax,gs:[CdRmDriveBuf.sStat.dwStart]	; get resume point
 	  bts	gs:[CdRmDriveBuf.wStatus],9		; playing
 	  mov	gs:[CdRmDriveBuf.sReq.dwStart],eax
-	  mov	gs:[CdRmDriveBuf.dwBufPos],size CdRmDriveBuf ; force refill
+	  mov	gs:[CdRmDriveBuf.dwBufPos],0
+	  mov	gs:[CdRmDriveBuf.dwBufEnd],0		; force refill
 	  mov	fs:[ebx.PlayReq.wStatus],100h		; done, not busy
 	  jmp	@@return
 
