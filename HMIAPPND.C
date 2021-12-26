@@ -27,7 +27,7 @@
 #define EXT_FLASHTECK 0x4000
 #define EXT_RATIONAL  0x8000
 
-#define COPYBUF_SIZE 0x100 /* One page */
+#define COPYBUF_SIZE 0x100
 
 int main(int argc, char **argv, const char **envp) {
 	char *infile = NULL;
@@ -81,15 +81,16 @@ int main(int argc, char **argv, const char **envp) {
 		return -1;
 	}
 
-	outhdl = fopen(outfile, "wb");
-	if(!outhdl) {
-		perror("Coudn't open output file");
-		return -1;
-	}
-
 	drvhdl = fopen(drvfile, "rb");
 	if(!drvhdl) {
 		perror("Coudn't open driver file");
+		return -1;
+	}
+
+	/* Leave this for last to avoid truncating on failure... */
+	outhdl = fopen(outfile, "wb");
+	if(!outhdl) {
+		perror("Coudn't open output file");
 		return -1;
 	}
 
