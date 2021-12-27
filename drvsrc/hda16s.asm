@@ -54,6 +54,25 @@ ends
 ends
 RMCS ends
 
+ifdef	?FLASHTEK
+; Phar Lap / FlashTek Real-Mode interrupt structure
+RMIS	struc
+	intn	dw ?
+	rDS	dw ?
+	rES	dw ?
+	rFS	dw ?
+	rGS	dw ?
+	union
+		rEAX	dd ?
+		rAX	dw ?
+	ends
+	union
+		rEDX	dd ?
+		rDX	dw ?
+	ends
+RMIS	ends
+endif
+
 DEVNAME		equ 
 DEVSTOENUMERATE	equ 10h
 ?DEBUGLOG	equ 1
@@ -135,7 +154,11 @@ hdareg_seg	label	word
 		dd 0
 hdareg_linaddr	dd 0
 
-dwCorbDpmiHdl	label	dword	; these two dwords will never both be needed
+dwTSRbuf	dd 0
+MAXTSRBUFOFFSET	equ	100000h	; 1 MiB
+
+dwCorbDpmiHdl	label	dword	; only one of these three dwords will be needed
+dwTSRbufoffset	label	dword
 xmsentry	label	dword
 xmsentry_ip	dw 0
 xmsentry_cs	dw 0
@@ -167,6 +190,9 @@ sPICeoi		db 0		; EOI signal (if any) to send to slave PIC
 oldIRQhandler	label	fword
 oldIRQ_off	dd 0
 oldIRQ_seg	dw 0
+ifdef	?FLASHTEK
+oldIRQ_RM	dd 0
+endif
 
 irqvec		db 0		; the actual interrupt vector corresponding to our IRQ
 oldpciirq	db 0		; the interrupt line of the controller before we set it
@@ -573,6 +599,49 @@ endif
 	and	[codec],0Fh
 
 if	?DEBUGLOG
+	invoke	printtolog, CStr("Checking if HDATSR is installed...",0Dh,0Ah)
+endif
+	
+ifdef	?FLASHTEK
+	mov	cl,9Ch
+	mov	ax,2503h	; Phar Lap / FlashTek: get RM interrupt vector
+	int	21h
+	mov	cx,bx
+	test	ebx,ebx
+else
+	mov	ax,200h		; get real mode interrupt vector
+	mov	bl,9Ch
+	int	31h
+	or	cx,dx
+endif
+	jz	@F
+	int	9Ch
+@@:
+	.if	cx == 0C0DEh	; if there's no int 9Ch, it'll be 0, not C0DEh
+if	?DEBUGLOG
+	   invoke printtolog, CStr("HDATSR installed, using its arena @ ")
+	   invoke printbinword,bx
+	   invoke printbinword,ax
+	   invoke printtolog, CStr("b",0Dh,0Ah)
+endif
+	   shl	ebx,10h
+	   mov	bx,ax
+	   add	ebx,7Fh	; ensure 128-byte alignment
+	   and	bl,80h
+	   mov	[dwTSRbuf],ebx
+ifdef	?FLASHTEK
+	.else
+if	?DEBUGLOG
+	   invoke printtolog, CStr("HDATSR unavailable, need to allocate our own buffers - checking for DPMI...",0Dh,0Ah)
+endif
+	   mov	ax,1686h	; DPMI - detect mode
+	   int	2Fh
+	   test	ax,ax
+	   jnz	@@init_failed_esok
+endif
+	.endif
+
+if	?DEBUGLOG
 	invoke	printtolog, CStr("Checking if paging is enabled...",0Dh,0Ah)
 endif
 	mov	eax,cs
@@ -603,7 +672,7 @@ if	?DEBUGLOG
 endif
 	mov	[dwCorbSelHdl],eax
 	mov	[dwCorbPhys],edx
-	.if	!(eax & 0FFFF0000h)
+	.if	!((eax & 0FFFF0000h) || [dwTSRbuf])
 	   mov	[dwCorbDpmiHdl],ebx
 if	?DEBUGLOG
 	   invoke printtolog, CStr("CORB/RIRB physical address == ")
@@ -1078,16 +1147,28 @@ endif
 	mov	[mPICeoi],62h	; EOI for IRQ2 (cascaded interrupt)
 @@:
 	mov	[irqvec],al
+ifdef	?FLASHTEK
+	mov	cl,al
+	mov	ax,2503h	; Phar Lap / FlashTek: get RM interrupt vector
+	int	21h
+	mov	[oldIRQ_RM],ebx
+	mov	ax,2502h	; Phar Lap / FlashTek: get interrupt vector
+else
 	mov	ah,35h		; get interrupt vector
+endif
 	int	21h
 	mov	[oldIRQ_off],ebx
 	mov	[oldIRQ_seg],es
 
-	mov	ah,25h		; set interrupt vector
 	push	ds
 	push	cs
 	pop	ds
 	mov	edx,offset irq_handler
+ifdef	?FLASHTEK
+	mov	ax,2506h	; Phar Lap / FlashTek: set interrupt to gain control in PM
+else
+	mov	ah,25h		; set interrupt vector
+endif
 	int	21h
 	pop	ds
 if	?DEBUGLOG
@@ -1293,6 +1374,9 @@ endif
 	call	free_dma_buf
 	mov	[dwCorbPhys],eax
 	mov	[dwCorbSelHdl],eax
+	.if	[dwTSRbuf]
+	   mov	[dwTSRbufoffset],eax	; reset the bump allocator
+	.endif
 if	?DEBUGLOG
 	invoke printtolog, CStr("CORB/RIRB buffer freed",0Dh,0Ah)
 endif
@@ -1560,6 +1644,19 @@ if	?DEBUGLOG
 endif
 
 if	?CDAUDIO
+ifdef	?FLASHTEK
+	; FlashTek doesn't have functions for dynamically allocating Real-Mode
+	; memory and callbacks, so this stuff will only work if there's DPMI
+	; running behind it...
+if	?DEBUGLOG
+	invoke	printtolog, CStr("checking if running under DPMI...",0Dh,0Ah)
+endif
+	mov	ax,1686h	; DPMI - detect mode
+	int	2Fh
+	test	ax,ax
+	jnz	@@skip
+endif
+
 if	?DEBUGLOG
 	invoke	printtolog, CStr("checking if MSCDEX is available...",0Dh,0Ah)
 endif
@@ -1587,8 +1684,8 @@ if	?DEBUGLOG
 	invoke	printtolog, CStr("MSCDEX > 2.10 installed, allocating buffer to check drives...",0Dh,0Ah)
 endif
 
-	mov	ax,100h		; allocate DOS memory block
 	mov	bx,(size CdRmHeadBuf + 0Fh) SHR 4
+	mov	ax,100h		; allocate DOS memory block
 	int	31h
 
 if	?DEBUGLOG
@@ -2396,6 +2493,56 @@ get_subnodes	endp
 ; Takes size in EAX, returns XMS handle and selector in upper and lower halves of EAX, and physical address in EDX.
 ; If the handle in the upper half of EAX is returned as zero, then check EBX instead for a DPMI memory block handle!
 alloc_dma_buf	proc near
+	mov	edx,[dwTSRbuf]
+	test	edx,edx
+	jz	@@try_xms_dpmi
+
+	push	ecx
+	push	edi
+	push	esi
+	push	ebx
+
+	mov	edi,eax
+	add	eax,7Fh
+	and	al,80h
+	add	edx,[dwTSRbufoffset]
+	add	eax,[dwTSRbufoffset]	; bump allocation with 128-byte align
+	.if	eax > MAXTSRBUFOFFSET
+if	?DEBUGLOG
+	   invoke printtolog, CStr("out of TSR arena memory!",0Dh,0Ah)
+	   ror	eax,10h
+	   invoke printbinword,ax
+	   ror	eax,10h
+	   invoke printbinword,ax
+	   invoke printtolog, CStr("b > ")
+	   mov	ebx,MAXTSRBUFOFFSET
+	   ror	ebx,10h
+	   invoke printbinword,bx
+	   ror	ebx,10h
+	   invoke printbinword,bx
+	   invoke printtolog, CStr("b",0Dh,0Ah)
+endif
+	   xor	eax,eax
+	   stc
+	.else
+	   mov	[dwTSRbufoffset],eax
+
+	   mov	ecx,edx
+	   mov	ebx,edx
+	   shr	ebx,10h			; get physical base into BX:CX
+	   mov	esi,edi
+	   shr	esi,10h			; get desired buffer size into SI:DI
+	   call	alloc_phys_sel
+	   jc	@@dpmiselfail
+	.endif
+
+	pop	ebx
+	pop	esi
+	pop	edi
+	pop	ecx
+	ret
+
+@@try_xms_dpmi:
 	bt	[statusword],7
 	jnc	@@use_dpmi
 
@@ -2562,7 +2709,7 @@ endif
 	push	esi
 
 	push	eax		; save size for later
-	add	eax,7Fh			; ensure enough room for 128-byte alignment
+	add	eax,7Fh		; ensure enough room for 128-byte alignment
 	mov	cx,ax
 	mov	ebx,eax
 	shr	ebx,10h
@@ -2575,12 +2722,12 @@ endif
 	xor	eax,eax
 	add	cx,7Fh
 	adc	bx,0
-	and	cl,80h			; ensure 128-byte alignment
+	and	cl,80h		; ensure 128-byte alignment
 	push	bx
 	push	cx
 	call	alloc_phys_sel
-	jc	@@dpmiselfail
 	pop	edx		; get the address
+	jc	@@dpmiselfail
 
 	pop	ebx		; get the DPMI handle
 @@dpmi_retpoint:
@@ -2597,7 +2744,7 @@ endif
 	jmp	@@dpmifail
 @@dpmiselfail:
 if	?DEBUGLOG
-	invoke	printtolog, CStr("DPMI selector allocation failed",0Dh,0Ah)
+	invoke	printtolog, CStr("physical-memory selector allocation failed",0Dh,0Ah)
 endif
 	pop	ebx		; get the DPMI handle
 @@dpmifail:
@@ -2609,6 +2756,13 @@ alloc_dma_buf	endp
 ; Takes XMS handle and selector in upper and lower halves of EAX, respectively.
 ; If needed, takes DPMI handle in EBX.
 free_dma_buf	proc near
+	cmp	[dwTSRbuf],0
+	jz	@@try_xms_dpmi
+
+	mov	bx,ax
+	jmp	free_phys_sel
+
+@@try_xms_dpmi:
 	bt	[statusword],7
 	jnc	@@use_dpmi
 
@@ -2655,16 +2809,6 @@ free_dma_buf	proc near
 	push	edi
 
 	mov	bx,ax			; get selector
-if	?DEBUGLOG
-	pushad
-	mov	ax,6			; get segment base address
-	int	31h
-	invoke	printtolog, CStr("free_dma_buf: base address == ")
-	invoke	printbinword,cx
-	invoke	printbinword,dx
-	invoke	printtolog, CStr("b",0Dh,0Ah)
-	popad
-endif
 	call	free_selector
 
 	push	ebx

@@ -27,7 +27,8 @@
 #define EXT_FLASHTECK 0x4000
 #define EXT_RATIONAL  0x8000
 
-#define COPYBUF_SIZE 0x100
+#define COPYBUF_SIZE 0x1000 /* One page... */
+char copy_buffer[COPYBUF_SIZE]; /* Too big for stack! */
 
 int main(int argc, char **argv, const char **envp) {
 	char *infile = NULL;
@@ -38,7 +39,7 @@ int main(int argc, char **argv, const char **envp) {
 	uint32_t wExtenderType = EXT_RATIONAL;
 
 	/* Declarations for later... */
-	char szName[32], copy_buffer[COPYBUF_SIZE];
+	char szName[32];
 	long copy_filesize;
 	uint32_t hdrstart, wDrivers, lNextDriver, wSize;
 	FILE *inhdl, *outhdl, *drvhdl;
