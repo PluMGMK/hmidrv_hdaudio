@@ -11,9 +11,11 @@ Experimental support is also included for mixing CD Audio into the stream, by ho
 
 ## Limitations
 * Only supports version 3 of the Sound Operating System, used in Rayman. Version 4 is not supported.
-* Only supports clients using `RATIONAL`-type (i.e. DOS/4GW-like) DOS extenders, not `FLASHTECK` (i.e. FlashTek X-32VM and similar).
+* Only tested with `RATIONAL`-type (i.e. DOS/4GW-like) DOS extenders, not `FLASHTECK` [*[sic]*](https://github.com/Wohlstand/SOSPLAY/blob/master/sos3/include/sos.h#L574) (i.e. FlashTek X-32VM and similar).
+ * CD Audio won't work under FlashTek unless there is a DPMI host running behind it.
 * Currently only supports 16-bit stereo playback
 * CD Audio requires your drive to support raw reading (and support is currently incomplete - see below)
+* Cannot run under Windows 3.1/9x with the aforementioned HDA sound driver running - they will conflict
 
 ## `TODO` list
 * Figure out cause of skipping in looping sounds, and eliminate it
@@ -21,5 +23,6 @@ Experimental support is also included for mixing CD Audio into the stream, by ho
 * Implement support for volume control of CD Audio even when the drive doesn't have built-in audio capability
 * Implement support for four-channel CDs (playing two channels, which can be selected by running applications)
 * Write a detector (for `HMIDET.386`) to complement the driver
+* [MAYBE] find something using FlashTek and use it to test the driver
 * [MAYBE] implement support for pre-emphasis in CD Audio
 * [MAYBE] make 8-bit and mono versions

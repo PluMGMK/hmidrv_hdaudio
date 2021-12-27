@@ -1,5 +1,5 @@
 /* HMIAPPND.C
-   Append new driver to the end of a HMI driver blob
+   Append new driver(s) to the end of a HMI driver blob
    Written in C since this is really the only sane way to get something running
    on both Unix and DOS, at least at the moment...
    */
@@ -18,60 +18,60 @@
 #define INFILEARG "oldfile="
 #define DRVFILEARG "drvfile="
 #define OUTFILEARG "newfile="
-#define DEVIDARG "devid="
-#define FLASHTECKARG "--flashteck"
+
+#define DEVARG "drv"
+#define RATIONALCHAR 'r'
+#define FLASHTEKCHAR 'f'
+#define BOTHEXTCHAR 'b'
 
 #define MINDEVID 0xE000
 #define MAXDEVID 0xE200
 
-#define EXT_FLASHTECK 0x4000
-#define EXT_RATIONAL  0x8000
+#define EXT_FLASHTEK 0x4000
+#define EXT_RATIONAL 0x8000
 
 #define COPYBUF_SIZE 0x1000 /* One page... */
 char copy_buffer[COPYBUF_SIZE]; /* Too big for stack! */
 
 int main(int argc, char **argv, const char **envp) {
-	char *infile = NULL;
-	char *drvfile = NULL;
-	char *outfile = NULL;
-
-	uint32_t wDeviceID = 0;
-	uint32_t wExtenderType = EXT_RATIONAL;
+	char *infile = NULL, *outfile = NULL;
+	uint32_t wDeviceID = 0, wExtenderType = EXT_RATIONAL;
 
 	/* Declarations for later... */
-	char szName[32];
+	char szName[32], drvfile[32], drvtype;
 	long copy_filesize;
 	uint32_t hdrstart, wDrivers, lNextDriver, wSize;
 	FILE *inhdl, *outhdl, *drvhdl;
 
-	int i = 0;	
+	int drvstoappend = 0;
+	int i;	
 	for(i = 0; i < argc; i++) {
-		if(!strnicmp(argv[i], INFILEARG, strlen(INFILEARG))) {
+		if(!strnicmp(argv[i], INFILEARG, strlen(INFILEARG)))
 			infile = argv[i] + strlen(INFILEARG);
-		} else if(!strnicmp(argv[i], DRVFILEARG, strlen(DRVFILEARG))) {
-			drvfile = argv[i] + strlen(DRVFILEARG);
-		} else if(!strnicmp(argv[i], OUTFILEARG, strlen(OUTFILEARG))) {
+		else if(!strnicmp(argv[i], OUTFILEARG, strlen(OUTFILEARG)))
 			outfile = argv[i] + strlen(OUTFILEARG);
-		} else if(!strnicmp(argv[i], DEVIDARG, strlen(DEVIDARG))) {
-			sscanf(argv[i], DEVIDARG"%4x", &wDeviceID);
-		} else if(!strnicmp(argv[i], FLASHTECKARG, strlen(FLASHTECKARG))) {
-			wExtenderType = EXT_FLASHTECK;
-		}
+		else if(sscanf(argv[i], DEVARG"%c:%4x=%31s",
+				&drvtype, &wDeviceID, drvfile) == 3
+				&& (drvtype == RATIONALCHAR ||
+				drvtype == FLASHTEKCHAR ||
+				drvtype == BOTHEXTCHAR)
+				&& wDeviceID>=MINDEVID && wDeviceID<=MAXDEVID)
+			drvstoappend++;
 	}
 
-	if(infile == NULL || drvfile == NULL || outfile == NULL ||
-		wDeviceID < MINDEVID || wDeviceID > MAXDEVID ||
-		!(wExtenderType == EXT_RATIONAL || wExtenderType == EXT_FLASHTECK)) {
-		printf("Usage:\t%s [%s]"
+	if(infile == NULL || outfile == NULL || !drvstoappend) {
+		printf("Usage:\t%s"
 			" \\\n\t%s<Input HMIDRV.386 file>"
 			" \\\n\t%s<Output HMIDRV.386 file>"
-			" \\\n\t%s<File to append>"
-			" \\\n\t%s<Device ID>"
-			"\nDevice ID and Extender Type must be specified in hex"
-			"\nValid Device IDs are from %4X to %4X"
-			"\nWithout the \"FLASHTECK\" option, the driver is assumed to be for \"RATIONAL\"-type DOS Extenders\n",
-			argv[0], FLASHTECKARG,
-			INFILEARG, OUTFILEARG, DRVFILEARG, DEVIDARG,
+			" \\\n\t%s[%c|%c|%c]:<Device ID>=<Device BIN file>"
+			"\nYou can specify as many device files as needed."
+			"\nThe %dth character of each argument specifies the DOS extender type:"
+			"\n\tRational, FlashTek, or both."
+			"\nValid Device IDs are from %4X to %4X.\n",
+			argv[0],
+			INFILEARG, OUTFILEARG,
+			DEVARG, RATIONALCHAR, FLASHTEKCHAR, BOTHEXTCHAR,
+			strlen(DEVARG) + 1,
 			MINDEVID, MAXDEVID);
 		return 1;
 	}
@@ -82,13 +82,6 @@ int main(int argc, char **argv, const char **envp) {
 		return -1;
 	}
 
-	drvhdl = fopen(drvfile, "rb");
-	if(!drvhdl) {
-		perror("Coudn't open driver file");
-		return -1;
-	}
-
-	/* Leave this for last to avoid truncating on failure... */
 	outhdl = fopen(outfile, "wb");
 	if(!outhdl) {
 		perror("Coudn't open output file");
@@ -101,7 +94,7 @@ int main(int argc, char **argv, const char **envp) {
 
 	/* Number of drivers in the file */
 	fread(&wDrivers, sizeof(uint32_t), 1, inhdl);
-	wDrivers++; /* We're appending one! */
+	/* wDrivers += drvstoappend; */
 	fwrite(&wDrivers, sizeof(uint32_t), 1, outhdl);
 
 	printf("szName and wDrivers written...\n");
@@ -112,40 +105,80 @@ int main(int argc, char **argv, const char **envp) {
 	fseek(inhdl, ftell(outhdl), SEEK_SET); /* Back to where we were... */
 
 	/* Copy it */
-	while(ftell(inhdl) < copy_filesize) {
+	while(ftell(inhdl) < copy_filesize)
 		fwrite(copy_buffer, sizeof(char),
 			fread(copy_buffer, sizeof(char), COPYBUF_SIZE, inhdl),
 			outhdl);
-	}
 	printf("Old HMIDRV file copied to new one\n");
 
-	/* Construct the new driver header */
-	/* Where is the current header starting? */
-	hdrstart = ftell(outhdl);
-	/* Size of the new driver */
-	fseek(drvhdl, 0, SEEK_END);
-	wSize = ftell(drvhdl);
-	fseek(drvhdl, 0, SEEK_SET);
-	/* End of the driver in the file (header size is 32 + 4*4 = 48 bytes) */
-	lNextDriver = hdrstart + wSize + 48;
+	for(i = 0; i < argc && drvstoappend; i++) {
+		if(sscanf(argv[i], DEVARG"%c:%4x=%31s",
+			&drvtype, &wDeviceID, drvfile) < 3)
+			continue;
 
-	memset(szName, 0, 32); /* Make sure it's null-padded */
-	strncpy(szName, drvfile, 32);
-	fwrite(szName, sizeof(char), 32, outhdl);
-	fwrite(&lNextDriver, sizeof(uint32_t), 1, outhdl);
-	fwrite(&wSize, sizeof(uint32_t), 1, outhdl);
-	fwrite(&wDeviceID, sizeof(uint32_t), 1, outhdl);
-	fwrite(&wExtenderType, sizeof(uint32_t), 1, outhdl);
-	printf("New driver header written\n");
+		switch(drvtype) {
+			case RATIONALCHAR:
+				wExtenderType = EXT_RATIONAL;
+				break;
+			case FLASHTEKCHAR:
+				wExtenderType = EXT_FLASHTEK;
+				break;
+			case BOTHEXTCHAR:
+				wExtenderType = EXT_RATIONAL | EXT_FLASHTEK;
+				break;
+			default:
+				continue;
+		}
 
-	/* Copy it */
-	while(ftell(drvhdl) < wSize) {
-		fwrite(copy_buffer, sizeof(char),
-			fread(copy_buffer, sizeof(char), COPYBUF_SIZE, drvhdl),
-			outhdl);
+		if(wDeviceID < MINDEVID || wDeviceID > MAXDEVID)
+			continue;
+
+		printf("\nProcessing argument '%s'\n", argv[i]);
+
+		drvhdl = fopen(drvfile, "rb");
+		if(!drvhdl) {
+			perror("Couldn't open driver file");
+			continue;
+		}
+
+		/* Construct the new driver header */
+		/* Where is the current header starting? */
+		hdrstart = ftell(outhdl);
+		/* Size of the new driver */
+		fseek(drvhdl, 0, SEEK_END);
+		wSize = ftell(drvhdl);
+		fseek(drvhdl, 0, SEEK_SET);
+		/* End of the driver in the file
+		   (header size is 32 + 4*4 = 48 bytes) */
+		lNextDriver = hdrstart + wSize + 48;
+
+		memset(szName, 0, 32); /* Make sure it's null-padded */
+		strncpy(szName, drvfile, 32);
+		fwrite(szName, sizeof(char), 32, outhdl);
+		fwrite(&lNextDriver, sizeof(uint32_t), 1, outhdl);
+		fwrite(&wSize, sizeof(uint32_t), 1, outhdl);
+		fwrite(&wDeviceID, sizeof(uint32_t), 1, outhdl);
+		fwrite(&wExtenderType, sizeof(uint32_t), 1, outhdl);
+		printf("New driver header written\n");
+
+		/* Copy it */
+		while(ftell(drvhdl) < wSize) 
+			fwrite(copy_buffer, sizeof(char),
+				fread(copy_buffer, sizeof(char), COPYBUF_SIZE, drvhdl),
+				outhdl);
+		printf("Data copied!\n");
+
+		fclose(drvhdl);
+
+		wDrivers++;
+		drvstoappend--;
 	}
-	printf("All done!\n");
 
+	/* Write the updated wDrivers into the output file header */
+	fseek(outhdl, 32, SEEK_SET);
+	fwrite(&wDrivers, sizeof(uint32_t), 1, outhdl);
+
+	printf("\nAll done!\n");
 	return 0;
 }
 

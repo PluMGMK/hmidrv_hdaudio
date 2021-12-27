@@ -200,6 +200,7 @@ oldpciirq	db 0		; the interrupt line of the controller before we set it
 if	?CDAUDIO
 ?CDBUFSIZE	equ 10h		; size in sectors
 ?CDVOLCTL	equ 0
+?AGGRESSIVEIRQ0	equ 0		; unmask IRQ0 upon any "PLAY AUDIO" request
 
 CDSECTORSIZE	equ 930h	; a constant, defined in the Red Book standard
 CDBUFSIZEDWORDS	equ ?CDBUFSIZE * CDSECTORSIZE SHR 2
@@ -1274,8 +1275,14 @@ endif
 	   cmp	[oldIRQ_seg],ax				; AX = 0 from above
 	   je	@F
 
-	   mov	ah,25h		; set interrupt vector
 	   mov	al,[irqvec]
+ifdef	?FLASHTEK
+	   mov	cl,al
+	   mov	ebx,[oldIRQ_RM]
+	   mov	ax,2507h	; Phar Lap / FlashTek: set RM/PM int vectors
+else
+	   mov	ah,25h		; set interrupt vector
+endif
 	   push	ds
 	   lds	edx,[oldIRQhandler]
 	   int	21h
@@ -3006,8 +3013,15 @@ alloc_phys_sel	endp
 
 free_phys_sel	proc near
 	; BX = selector
+ifdef	?FLASHTEK
+	mov	ax,3504h		; FlashTek - get base address
+	int	21h
+	mov	dx,cx
+	shr	ecx,10h
+else
 	mov	ax,6			; get segment base address
 	int	31h
+endif
 	jc	@F
 
 if	?DEBUGLOG
@@ -3053,12 +3067,22 @@ map_physmem	proc near	uses eax edx esi edi
 
 	xchg	cx,dx
 	mov	ebx,edx
+ifdef	?FLASHTEK
+	mov	bx,cx
+	mov	ecx,eax
+	mov	ax,350Ah		; FlashTek - physical address mapping
+	int	21h
+	push	ebx
+	pop	cx
+	pop	bx
+else
 	shr	ebx,10h
 	mov	di,ax
 	mov	esi,eax
 	shr	esi,10h
 	mov	ax,0800h		; physical address mapping
 	int	31h
+endif
 	jc	@F
 
 	and	edx,0FFFh		; get back the offset into the page
@@ -3069,6 +3093,7 @@ map_physmem	proc near	uses eax edx esi edi
 map_physmem	endp
 
 unmap_physmem	proc near
+ifndef	?FLASHTEK			; FlashTek has no "unmap" function...
 	bt	[statusword],7
 	jnc	@F			; this is a no-op
 
@@ -3077,6 +3102,7 @@ unmap_physmem	proc near
 	mov	ax,801h
 	int	31h
 @@:
+endif
 	ret
 unmap_physmem	endp
 
@@ -3085,24 +3111,46 @@ alloc_selector	proc near
 	; SI:DI = size
 	; returns selector in AX
 	push	edx
+ifdef	?FLASHTEK
+	push	bx
+	push	cx
+	pop	ecx
+	mov	ax,3501h	; FlashTek - allocate selector
+	int	21h
+else
 	mov	dx,cx
 	xor	ax,ax		; allocate selector
 	mov	cx,1		; one selector
 	int	31h
+endif
 	jc	@F
 
+ifdef	?FLASHTEK
+	mov	ax,3503h	; FlashTek - set base address
+	int	21h
+else
 	mov	cx,bx
 	mov	bx,ax
 	mov	ax,7		; set segment base address
 	int	31h
+endif
 	jc	@F
 
+ifdef	?FLASHTEK
+	push	si
+	push	di
+	pop	ecx
+	dec	ecx		; change size to limit
+	mov	ax,3505h	; FlashTek - set limit
+	int	21h
+else
 	mov	dx,di
 	mov	cx,si
 	mov	ax,8		; set segment limit
 	dec	dx		; change size to limit
 	sbb	cx,0
 	int	31h
+endif
 	jc	@F
 
 	mov	ax,bx		; return the selector
@@ -3114,8 +3162,13 @@ alloc_selector	endp
 
 free_selector	proc near
 	; BX = selector
+ifdef	?FLASHTEK
+	mov	ax,3502h
+	int	21h
+else
 	mov	ax,1
 	int	31h
+endif
 	ret
 free_selector	endp
 
@@ -4087,6 +4140,13 @@ int2f_handler	proc
 	  mov	gs:[CdRmDriveBuf.dwBufPos],0
 	  mov	gs:[CdRmDriveBuf.dwBufEnd],0		; force refill
 	  mov	fs:[ebx.PlayReq.wStatus],300h		; done and busy
+
+if	?AGGRESSIVEIRQ0
+	  in	al,21h
+	  btr	ax,0		; unmask IRQ0 = timer
+	  out	21h,al
+endif
+
 	  jmp	@@return
 
 	.elseif fs:[ebx.IOCTLRW.bCmd] == 85h	; STOP AUDIO
@@ -4113,6 +4173,13 @@ int2f_handler	proc
 	  mov	gs:[CdRmDriveBuf.dwBufPos],0
 	  mov	gs:[CdRmDriveBuf.dwBufEnd],0		; force refill
 	  mov	fs:[ebx.PlayReq.wStatus],100h		; done, not busy
+
+if	?AGGRESSIVEIRQ0
+	  in	al,21h
+	  btr	ax,0		; unmask IRQ0 = timer
+	  out	21h,al
+endif
+
 	  jmp	@@return
 
 @@:
