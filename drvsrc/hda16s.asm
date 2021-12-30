@@ -1,3 +1,5 @@
+; 16-bit Stereo HD Audio driver for HMIDRV.386
+
 	.386
 	.model	small
 
@@ -73,7 +75,6 @@ RMIS	struc
 RMIS	ends
 endif
 
-DEVNAME		equ 
 DEVSTOENUMERATE	equ 10h
 ?DEBUGLOG	equ 1
 ?CDAUDIO	equ 1
@@ -83,7 +84,7 @@ _TEXT	segment	use32
 
 	.code
 	org 0
-start:
+hda16s:
 	jmp	entry
 
 align 4
@@ -99,7 +100,7 @@ wMinRate	dd 8000
 wMaxRate	dd 48000
 wMixerOnBoard	dd 0	; Perhaps, but can't guarantee this
 wMixerFlags	dd 0
-wFlags		dd 200h	; Pseudo-DMA
+wFlags		dd 300h	; Pseudo-DMA, detector needs env strings
 lpPortList	label	fword
 		dd offset PortList
 lpPortList_seg	label	word
@@ -348,6 +349,10 @@ endif
 statusword	dw 1 SHL 7
 ; bitmap representing rates supported by the currently-selected DAC node
 ratebitmap	dw 0
+
+CHECK_XMS_NEEDED	macro
+	bt	[statusword],7
+endm
 
 ; software rate divider
 soft_divider	db 1
@@ -599,126 +604,28 @@ if	?DEBUGLOG
 endif
 	and	[codec],0Fh
 
-if	?DEBUGLOG
-	invoke	printtolog, CStr("Checking if HDATSR is installed...",0Dh,0Ah)
-endif
-	
-ifdef	?FLASHTEK
-	mov	cl,9Ch
-	mov	ax,2503h	; Phar Lap / FlashTek: get RM interrupt vector
-	int	21h
-	mov	cx,bx
-	test	ebx,ebx
-else
-	mov	ax,200h		; get real mode interrupt vector
-	mov	bl,9Ch
-	int	31h
-	or	cx,dx
-endif
-	jz	@F
-	int	9Ch
-@@:
-	.if	cx == 0C0DEh	; if there's no int 9Ch, it'll be 0, not C0DEh
-if	?DEBUGLOG
-	   invoke printtolog, CStr("HDATSR installed, using its arena @ ")
-	   invoke printbinword,bx
-	   invoke printbinword,ax
-	   invoke printtolog, CStr("b",0Dh,0Ah)
-endif
-	   shl	ebx,10h
-	   mov	bx,ax
-	   add	ebx,7Fh	; ensure 128-byte alignment
-	   and	bl,80h
-	   mov	[dwTSRbuf],ebx
-ifdef	?FLASHTEK
-	.else
-if	?DEBUGLOG
-	   invoke printtolog, CStr("HDATSR unavailable, need to allocate our own buffers - checking for DPMI...",0Dh,0Ah)
-endif
-	   mov	ax,1686h	; DPMI - detect mode
-	   int	2Fh
-	   test	ax,ax
-	   jnz	@@init_failed_esok
-endif
-	.endif
+	call	check_TSR
+	jc	@@init_failed_esok
+	mov	[dwTSRbuf],ebx
 
-if	?DEBUGLOG
-	invoke	printtolog, CStr("Checking if paging is enabled...",0Dh,0Ah)
-endif
-	mov	eax,cs
-	test	eax,3
-	jnz	@F
-
-if	?DEBUGLOG
-	invoke	printtolog, CStr("Operating in Ring 0, checking CR0...",0Dh,0Ah)
-endif
-	mov	eax,cr0
-	bt	eax,1Fh	; CR0.PG
+	call	check_paging
 	jc	@F
-
-if	?DEBUGLOG
-	invoke	printtolog, CStr("Paging is off!",0Dh,0Ah)
-endif
 	btr	[statusword],7
 
 @@:
-if	?DEBUGLOG
-	invoke	printtolog, CStr("Allocating CORB/RIRB buffer...",0Dh,0Ah)
-endif
-	mov	eax,0C20h	; 1 kiB for CORB + 2 kiB for RIRB + 32 bytes for BDL
-	call	alloc_dma_buf
+	call	alloc_CORB_RIRB
 	jc	@@init_failed_esok
-if	?DEBUGLOG
-	invoke	printtolog, CStr("CORB/RIRB buffer allocated successfully",0Dh,0Ah)
-endif
-	mov	[dwCorbSelHdl],eax
-	mov	[dwCorbPhys],edx
-	.if	!((eax & 0FFFF0000h) || [dwTSRbuf])
-	   mov	[dwCorbDpmiHdl],ebx
-if	?DEBUGLOG
-	   invoke printtolog, CStr("CORB/RIRB physical address == ")
-	   ror	edx,10h
-	   invoke printbinword,dx
-	   ror	edx,10h
-	   invoke printbinword,dx
-	   invoke printtolog, CStr("b",0Dh,0Ah,"DPMI handle == ")
-	   ror	ebx,10h
-	   invoke printbinword,bx
-	   ror	ebx,10h
-	   invoke printbinword,bx
-	   invoke printtolog, CStr("b",0Dh,0Ah)
-endif
-	.endif
 
 	push	es
 	call	get_hdareg_ptr
 	jc	@@init_failed
 	bts	es:[edi].HDAREGS.gctl,0
-	jc	@@hda_running
+	jc	@F
 
-if	?DEBUGLOG
-	invoke	printtolog, CStr("Initializing HDA controller...",0Dh,0Ah)
-endif
-	mov	ecx,10000h
+	call	init_cntrlr
+	jc	@@init_failed
+
 @@:
-	call	wait_timerch2
-	test	es:[edi].HDAREGS.gctl,1
-	loopz	@B
-	jnz	@@hda_running
-
-if	?DEBUGLOG
-	invoke	printtolog, CStr("Timed out initializing HDA controller!",0Dh,0Ah)
-endif
-	jmp	@@init_failed
-
-@@hda_running:
-if	?DEBUGLOG
-	invoke	printtolog, CStr("GCAP == ")
-	invoke	printbinword,es:[edi].HDAREGS.gcap
-	invoke	printtolog, CStr("b",0Dh,0Ah,"Version == ")
-	invoke	printbinword,word ptr es:[edi].HDAREGS.vminor
-	invoke	printtolog, CStr("b",0Dh,0Ah)
-endif
 	; make sure interrupts are off until we set up IRQ...
 	xor	eax,eax
 	bt	es:[edi].HDAREGS.intctl,31
@@ -732,27 +639,8 @@ endif
 	loopnz	@B
 
 @@interrupts_off:
-if	?DEBUGLOG
-	invoke	printtolog, CStr("Device initialized, ensuring it can act as busmaster...",0Dh,0Ah)
-endif
-	mov	ax,0B109h	; read configuration word
-	mov	edi,4		; command register
-	int	1Ah
+	call	set_busmaster
 	jc	@@init_failed
-	bts	cx,2		; bit 2 = bus master enabled
-	jc	@@busmaster_ok
-
-if	?DEBUGLOG
-	invoke	printtolog, CStr("Setting busmaster flag...",0Dh,0Ah)
-endif
-	mov	ax,0B10Ch	; write configuration word
-	int	1Ah
-	jc	@@init_failed
-
-@@busmaster_ok:
-if	?DEBUGLOG
-	invoke	printtolog, CStr("Busmaster flag set",0Dh,0Ah)
-endif
 
 	call	get_hdareg_ptr
 if	?DEBUGLOG
@@ -829,125 +717,8 @@ endif
 	mov	ax,es:[edi].HDAREGS.corbrp
 	mov	es:[edi].HDAREGS.corbwp,ax
 
-	mov	al,es:[edi].HDAREGS.corbsize
-	mov	ah,al
-	and	al,3				; two bits setting the size
-	and	ah,0F0h				; four bits indicating size capability
-
-	bt	ax,0Eh				; 256 entries possible?
-	jnc	@F
-if	?DEBUGLOG
-	invoke	printtolog, CStr("CORB supports 256 entries",0Dh,0Ah)
-endif
-	cmp	al,2				; 256 entries set?
-	je	@@corbsizeok
-	mov	al,2
-	jmp	@@setcorbsize
-
-@@:
-	bt	ax,0Dh				; 16 entries possible?
-	jnc	@F
-if	?DEBUGLOG
-	invoke	printtolog, CStr("CORB supports 16 entries",0Dh,0Ah)
-endif
-	cmp	al,1				; 16 entries set?
-	mov	[corbwpmask],0Fh		; CORB WP wraps every 16 entries!
-	je	@@corbsizeok
-	mov	al,1
-	jmp	@@setcorbsize
-
-@@:
-	; if we're here, then only 2 entries are possible, and must already be set
-if	?DEBUGLOG
-	invoke	printtolog, CStr("CORB only supports 2 entries",0Dh,0Ah)
-endif
-	mov	[corbwpmask],1			; wraps every second entry!
-	jmp	@@corbsizeok
-
-@@setcorbsize:
-if	?DEBUGLOG
-	invoke	printtolog, CStr("setting CORB size...",0Dh,0Ah)
-endif
-	or	al,ah
-	mov	es:[edi].HDAREGS.corbsize,al
-	mov	ecx,1000h
-@@:
-	call	wait_timerch2
-	cmp	es:[edi].HDAREGS.corbsize,al
-	loopne	@B
-
-@@corbsizeok:
-if	?DEBUGLOG
-	invoke	printtolog, CStr("CORB size set",0Dh,0Ah)
-endif
-	mov	al,es:[edi].HDAREGS.rirbsize
-	mov	ah,al
-	and	al,3				; two bits setting the size
-	and	ah,0F0h				; four bits indicating size capability
-
-	bt	ax,0Eh				; 256 entries possible?
-	jnc	@F
-if	?DEBUGLOG
-	invoke	printtolog, CStr("RIRB supports 256 entries",0Dh,0Ah)
-endif
-	cmp	al,2				; 256 entries set?
-	je	@@rirbsizeok
-	mov	al,2
-	jmp	@@setrirbsize
-
-@@:
-	bt	ax,0Dh				; 16 entries possible?
-	jnc	@F
-if	?DEBUGLOG
-	invoke	printtolog, CStr("RIRB supports 16 entries",0Dh,0Ah)
-endif
-	cmp	al,1				; 16 entries set?
-	mov	[rirbwpmask],0Fh		; RIRB WP wraps every 16 entries!
-	je	@@rirbsizeok
-	mov	al,1
-	jmp	@@setrirbsize
-
-@@:
-	; if we're here, then only 2 entries are possible, and must already be set
-if	?DEBUGLOG
-	invoke	printtolog, CStr("RIRB only supports 2 entries",0Dh,0Ah)
-endif
-	mov	[rirbwpmask],1			; wraps every second entry!
-	jmp	@@rirbsizeok
-
-@@setrirbsize:
-if	?DEBUGLOG
-	invoke	printtolog, CStr("setting RIRB size...",0Dh,0Ah)
-endif
-	or	al,ah
-	mov	es:[edi].HDAREGS.rirbsize,al
-	mov	ecx,1000h
-@@:
-	call	wait_timerch2
-	cmp	es:[edi].HDAREGS.rirbsize,al
-	loopne	@B
-
-@@rirbsizeok:
-if	?DEBUGLOG
-	invoke	printtolog, CStr("RIRB size set",0Dh,0Ah)
-endif
-
-if	?DEBUGLOG
-	invoke	printtolog, CStr("Starting CORB/RIRB DMA engines...",0Dh,0Ah)
-endif
-	or	es:[edi].HDAREGS.corbctl,3	; turn on and enable interrupts
-	or	es:[edi].HDAREGS.rirbctl,6	; turn on and enable overrun interrupt
-	mov	ecx,1000h
-@@:
-	call	wait_timerch2
-	test	es:[edi].HDAREGS.corbctl,2
-	loopz	@B
-	jnz	@F
-
-if	?DEBUGLOG
-	invoke	printtolog, CStr("Timed out initializing HDA controller!",0Dh,0Ah)
-endif
-	jmp	@@init_failed
+	call	start_CORB_RIRB
+	jc	@@init_failed
 
 @@:
 if	?DEBUGLOG
@@ -1602,7 +1373,22 @@ endif
 	mov	[dwAuxSelHdl],eax
 	mov	[dwAuxDpmiHdl],ebx
 if	?DEBUGLOG
-	invoke	printtolog, CStr("128-byte-aligned aux buffer created",0Dh,0Ah)
+	invoke	printtolog, CStr("128-byte-aligned aux buffer created, clearing...",0Dh,0Ah)
+endif
+
+	xor	eax,eax
+	push	edi
+	push	es
+	push	ecx
+	les	edi,[lpAuxBufFilled]
+	xor	edi,edi	; just in case...
+	shr	ecx,2
+	rep	stosd
+	pop	ecx
+	pop	es
+	pop	edi
+if	?DEBUGLOG
+	invoke	printtolog, CStr("aux buffer cleared",0Dh,0Ah)
 endif
 
 @@:
@@ -2278,6 +2064,312 @@ printtofile	proc near	uses eax ecx es ds edi
 	ret
 printtofile	endp
 
+; check if HDATSR is installed
+; returns pointer to buffer in EBX, CF set if needed but not present
+check_TSR	proc near
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Checking if HDATSR is installed...",0Dh,0Ah)
+endif
+	
+ifdef	?FLASHTEK
+	mov	cl,9Ch
+	mov	ax,2503h	; Phar Lap / FlashTek: get RM interrupt vector
+	int	21h
+	mov	cx,bx
+	test	ebx,ebx
+else
+	mov	ax,200h		; get real mode interrupt vector
+	mov	bl,9Ch
+	int	31h
+	or	cx,dx
+endif
+	jz	@F
+	int	9Ch
+@@:
+	.if	cx == 0C0DEh	; if there's no int 9Ch, it'll be 0, not C0DEh
+if	?DEBUGLOG
+	   invoke printtolog, CStr("HDATSR installed, using its arena @ ")
+	   invoke printbinword,bx
+	   invoke printbinword,ax
+	   invoke printtolog, CStr("b",0Dh,0Ah)
+endif
+	   shl	ebx,10h
+	   mov	bx,ax
+	   add	ebx,7Fh	; ensure 128-byte alignment
+	   and	bl,80h
+	   clc
+	.else
+	   xor	ebx,ebx	; clears carry - OK since in RATIONAL, we don't need TSR
+ifdef	?FLASHTEK
+if	?DEBUGLOG
+	   invoke printtolog, CStr("HDATSR unavailable, need to allocate our own buffers - checking for DPMI...",0Dh,0Ah)
+endif
+	   mov	ax,1686h	; DPMI - detect mode
+	   int	2Fh
+	   test	ax,ax
+	   clc
+	   jz	@F
+	   stc
+endif
+	.endif
+@@:
+	ret
+check_TSR	endp
+
+; check if paging is enabled - CF set if yes, clear if no
+check_paging	proc near
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Checking if paging is enabled...",0Dh,0Ah)
+endif
+	mov	eax,cs
+	test	eax,3
+	jnz	@F
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Operating in Ring 0, checking CR0...",0Dh,0Ah)
+endif
+	mov	eax,cr0
+	bt	eax,1Fh	; CR0.PG
+	jc	@F
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Paging is off!",0Dh,0Ah)
+	clc
+endif
+	ret
+
+@@:
+	stc
+	ret
+check_paging	endp
+
+alloc_CORB_RIRB	proc near
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Allocating CORB/RIRB buffer...",0Dh,0Ah)
+endif
+	mov	eax,0C20h	; 1 kiB for CORB + 2 kiB for RIRB + 32 bytes for BDL
+	call	alloc_dma_buf
+	jc	@F
+if	?DEBUGLOG
+	invoke	printtolog, CStr("CORB/RIRB buffer allocated successfully",0Dh,0Ah)
+endif
+	mov	[dwCorbSelHdl],eax
+	mov	[dwCorbPhys],edx
+	.if	!((eax & 0FFFF0000h) || [dwTSRbuf])
+	   mov	[dwCorbDpmiHdl],ebx
+if	?DEBUGLOG
+	   invoke printtolog, CStr("CORB/RIRB physical address == ")
+	   ror	edx,10h
+	   invoke printbinword,dx
+	   ror	edx,10h
+	   invoke printbinword,dx
+	   invoke printtolog, CStr("b",0Dh,0Ah,"DPMI handle == ")
+	   ror	ebx,10h
+	   invoke printbinword,bx
+	   ror	ebx,10h
+	   invoke printbinword,bx
+	   invoke printtolog, CStr("b",0Dh,0Ah)
+endif
+	.endif
+
+	clc
+@@:
+	ret
+alloc_CORB_RIRB	endp
+
+init_cntrlr	proc near	uses es edi
+	call	get_hdareg_ptr
+	jc	@@failed
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Initializing HDA controller...",0Dh,0Ah)
+endif
+	mov	ecx,10000h
+@@:
+	call	wait_timerch2
+	test	es:[edi].HDAREGS.gctl,1
+	loopz	@B
+	jnz	@@hda_running
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Timed out initializing HDA controller!",0Dh,0Ah)
+endif
+@@failed:
+	stc
+	ret
+
+@@hda_running:
+if	?DEBUGLOG
+	invoke	printtolog, CStr("GCAP == ")
+	invoke	printbinword,es:[edi].HDAREGS.gcap
+	invoke	printtolog, CStr("b",0Dh,0Ah,"Version == ")
+	invoke	printbinword,word ptr es:[edi].HDAREGS.vminor
+	invoke	printtolog, CStr("b",0Dh,0Ah)
+endif
+	clc
+	ret
+init_cntrlr	endp
+
+set_busmaster	proc near
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Device initialized, ensuring it can act as busmaster...",0Dh,0Ah)
+endif
+	mov	ax,0B109h	; read configuration word
+	mov	bx,[wPort]
+	mov	edi,4		; command register
+	int	1Ah
+	jc	@F
+	bts	cx,2		; bit 2 = bus master enabled
+	jc	@@busmaster_ok
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Setting busmaster flag...",0Dh,0Ah)
+endif
+	mov	ax,0B10Ch	; write configuration word
+	int	1Ah
+	jc	@F
+
+@@busmaster_ok:
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Busmaster flag set",0Dh,0Ah)
+endif
+	clc
+
+@@:
+	ret
+set_busmaster	endp
+
+start_CORB_RIRB	proc near	uses es edi
+	call	get_hdareg_ptr
+	jc	@@failed
+
+	mov	al,es:[edi].HDAREGS.corbsize
+	mov	ah,al
+	and	al,3				; two bits setting the size
+	and	ah,0F0h				; four bits indicating size capability
+
+	bt	ax,0Eh				; 256 entries possible?
+	jnc	@F
+if	?DEBUGLOG
+	invoke	printtolog, CStr("CORB supports 256 entries",0Dh,0Ah)
+endif
+	cmp	al,2				; 256 entries set?
+	je	@@corbsizeok
+	mov	al,2
+	jmp	@@setcorbsize
+
+@@:
+	bt	ax,0Dh				; 16 entries possible?
+	jnc	@F
+if	?DEBUGLOG
+	invoke	printtolog, CStr("CORB supports 16 entries",0Dh,0Ah)
+endif
+	cmp	al,1				; 16 entries set?
+	mov	[corbwpmask],0Fh		; CORB WP wraps every 16 entries!
+	je	@@corbsizeok
+	mov	al,1
+	jmp	@@setcorbsize
+
+@@:
+	; if we're here, then only 2 entries are possible, and must already be set
+if	?DEBUGLOG
+	invoke	printtolog, CStr("CORB only supports 2 entries",0Dh,0Ah)
+endif
+	mov	[corbwpmask],1			; wraps every second entry!
+	jmp	@@corbsizeok
+
+@@setcorbsize:
+if	?DEBUGLOG
+	invoke	printtolog, CStr("setting CORB size...",0Dh,0Ah)
+endif
+	or	al,ah
+	mov	es:[edi].HDAREGS.corbsize,al
+	mov	ecx,1000h
+@@:
+	call	wait_timerch2
+	cmp	es:[edi].HDAREGS.corbsize,al
+	loopne	@B
+
+@@corbsizeok:
+if	?DEBUGLOG
+	invoke	printtolog, CStr("CORB size set",0Dh,0Ah)
+endif
+	mov	al,es:[edi].HDAREGS.rirbsize
+	mov	ah,al
+	and	al,3				; two bits setting the size
+	and	ah,0F0h				; four bits indicating size capability
+
+	bt	ax,0Eh				; 256 entries possible?
+	jnc	@F
+if	?DEBUGLOG
+	invoke	printtolog, CStr("RIRB supports 256 entries",0Dh,0Ah)
+endif
+	cmp	al,2				; 256 entries set?
+	je	@@rirbsizeok
+	mov	al,2
+	jmp	@@setrirbsize
+
+@@:
+	bt	ax,0Dh				; 16 entries possible?
+	jnc	@F
+if	?DEBUGLOG
+	invoke	printtolog, CStr("RIRB supports 16 entries",0Dh,0Ah)
+endif
+	cmp	al,1				; 16 entries set?
+	mov	[rirbwpmask],0Fh		; RIRB WP wraps every 16 entries!
+	je	@@rirbsizeok
+	mov	al,1
+	jmp	@@setrirbsize
+
+@@:
+	; if we're here, then only 2 entries are possible, and must already be set
+if	?DEBUGLOG
+	invoke	printtolog, CStr("RIRB only supports 2 entries",0Dh,0Ah)
+endif
+	mov	[rirbwpmask],1			; wraps every second entry!
+	jmp	@@rirbsizeok
+
+@@setrirbsize:
+if	?DEBUGLOG
+	invoke	printtolog, CStr("setting RIRB size...",0Dh,0Ah)
+endif
+	or	al,ah
+	mov	es:[edi].HDAREGS.rirbsize,al
+	mov	ecx,1000h
+@@:
+	call	wait_timerch2
+	cmp	es:[edi].HDAREGS.rirbsize,al
+	loopne	@B
+
+@@rirbsizeok:
+if	?DEBUGLOG
+	invoke	printtolog, CStr("RIRB size set",0Dh,0Ah)
+endif
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Starting CORB/RIRB DMA engines...",0Dh,0Ah)
+endif
+	or	es:[edi].HDAREGS.corbctl,3	; turn on and enable interrupts
+	or	es:[edi].HDAREGS.rirbctl,6	; turn on and enable overrun interrupt
+	mov	ecx,1000h
+@@:
+	call	wait_timerch2
+	test	es:[edi].HDAREGS.corbctl,2
+	loopz	@B
+	jnz	@F
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Timed out initializing CORB/RIRB!",0Dh,0Ah)
+endif
+@@failed:
+	stc
+	ret
+
+@@:
+	clc
+	ret
+start_CORB_RIRB	endp
+
 ; Unmute and set the amplifier gain to 0 dB for [node]
 ; If EAX is zero, only does the output amp, otherwise does both input and output
 unmute		proc near	uses eax edx
@@ -2550,7 +2642,7 @@ endif
 	ret
 
 @@try_xms_dpmi:
-	bt	[statusword],7
+	CHECK_XMS_NEEDED
 	jnc	@@use_dpmi
 
 	push	ebp
@@ -2770,7 +2862,7 @@ free_dma_buf	proc near
 	jmp	free_phys_sel
 
 @@try_xms_dpmi:
-	bt	[statusword],7
+	CHECK_XMS_NEEDED
 	jnc	@@use_dpmi
 
 	push	ebp
@@ -3046,7 +3138,7 @@ map_physmem	proc near	uses eax edx esi edi
 	; SI:DI = size (preserved after call)
 	; returns linear address in BX:CX
 
-	bt	[statusword],7
+	CHECK_XMS_NEEDED
 	jnc	@F			; return the phys address as linear
 
 	; figure out which pages need to be mapped, and how many
@@ -3094,7 +3186,7 @@ map_physmem	endp
 
 unmap_physmem	proc near
 ifndef	?FLASHTEK			; FlashTek has no "unmap" function...
-	bt	[statusword],7
+	CHECK_XMS_NEEDED
 	jnc	@F			; this is a no-op
 
 	; BX:CX = linear address
@@ -4237,4 +4329,4 @@ _TEXT	ends
 ; make sure the assembler knows all the CStrs are in the right segment!
 DGROUP	group	_TEXT, CONST
 
-end	start
+end	hda16s
