@@ -5,7 +5,7 @@ sCaps:
 szDeviceName	db "HD Audio 16 Stereo"
 	NAMELEN	equ $-szDeviceName
 		db (20h - NAMELEN) dup (0)
-wDeviceVersion	dd 0	; Not production yet! XD
+wDeviceVersion	dd 1	; Working fairly satisfactorily at this point...
 wBitsPerSample	dd 16	; 16-bit driver
 wChannels	dd (FORMATLOBYTE AND 0Fh) ; CHAN
 wMinRate	dd 8000
@@ -88,7 +88,6 @@ dwCorbPhys	dd 0		; Physical address of CORB/RIRB/BDL buffer
 corbwpmask	db 0FFh
 rirbwpmask	db 0FFh
 
-if	?DEBUGLOG
 CStr macro text:vararg	;define a string in .code
 local sym
 	.const
@@ -97,5 +96,6 @@ sym db text,0
 	exitm <offset sym>
 endm
 
+if	?DEBUGLOG
 debuglog_hdl	dd -1
 endif

@@ -36,21 +36,6 @@ if	?DEBUGLOG
 ; ---------------------------------- ;
 	assume	ds:_TEXT	; always called from within DS-set portion of entry point
 
-openlog		proc near stdcall	uses eax ecx edx	pszFilename:dword,append:byte
-	.if	[append]
-	  mov	ax,3D02h	; OPEN R/W
-	.else
-	  mov	ah,3Ch		; CREAT
-	.endif
-	xor	ecx,ecx		; no special attributes
-	mov	edx,[pszFilename]
-	int	21h
-	jc	@F
-	mov	[debuglog_hdl],eax
-@@:
-	ret
-openlog		endp
-
 oldvidmode	db ?
 logtostderr	proc near		uses eax ebx
 	mov	ah,0Fh		; get current video mode
@@ -72,6 +57,27 @@ printtolog	proc near stdcall	uses ebx edx	pszOutStr:dword
 @@:
 	ret
 printtolog	endp
+
+openlog		proc near stdcall	uses eax ecx edx	pszFilename:dword,append:byte
+	.if	[append]
+	  mov	ax,3D02h	; OPEN R/W
+	.else
+	  mov	ah,3Ch		; CREAT
+	.endif
+	xor	ecx,ecx		; no special attributes
+	mov	edx,[pszFilename]
+	int	21h
+	jc	@F
+	mov	[debuglog_hdl],eax
+	ret
+
+@@:
+	invoke	logtostderr
+	invoke	printtolog, CStr("Couldn't open ")
+	invoke	printtolog, [pszFilename]
+	invoke	printtolog, CStr(" for writing, logging to stderr...",0Dh,0Ah)
+	ret
+openlog		endp
 
 ; Print 16 bits to the debug log
 curbinword	db 16 dup (?)

@@ -73,4 +73,3 @@ RMIS	ends
 endif
 
 DEVSTOENUMERATE	equ 10h
-?DEBUGLOG	equ 1

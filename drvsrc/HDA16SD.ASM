@@ -4,6 +4,10 @@
 	.model	small
 	include	comdecs.inc
 
+; Debug logging cannot currently be enabled for the detector
+; as it blows up the binary size beyond one page (which is all the lib provides)
+?DEBUGLOG	equ 0
+
 _TEXT	segment	use32
 	assume	ds:nothing,es:nothing,gs:nothing,fs:_TEXT
 
@@ -594,7 +598,9 @@ parseenvstring		endp
 
 _TEXT	ends
 
+if	?DEBUGLOG
 ; make sure the assembler knows all the CStrs are in the right segment!
 DGROUP	group	_TEXT, CONST
+endif
 
 end	hda16sd

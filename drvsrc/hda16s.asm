@@ -4,6 +4,7 @@
 	.model	small
 	include	comdecs.inc
 
+?DEBUGLOG	equ 0
 ?CDAUDIO	equ 1
 
 _TEXT	segment	use32
@@ -229,7 +230,8 @@ ftable	dd offset drv_init
 
 	include	comfuncs.inc
 
-if	?CDAUDIO and ?DEBUGLOG
+if	?DEBUGLOG
+if	?CDAUDIO
 ; Print nth drive letter to the debug log
 curdriveletter	db ?
 		db 0
@@ -243,7 +245,6 @@ printdriveletter	proc near stdcall	uses eax	bOut:byte
 printdriveletter	endp
 endif
 
-if	?DEBUGLOG
 announcecopy	proc near
 	invoke	printtolog, CStr("copying ")
 	ror	edx,10h
