@@ -4,7 +4,7 @@
 	.model	small
 	include	comdecs.inc
 
-?DEBUGLOG	equ 0
+?DEBUGLOG	equ 1
 ?CDAUDIO	equ 1
 
 _TEXT	segment	use32
@@ -43,7 +43,7 @@ irqvec		db 0		; the actual interrupt vector corresponding to our IRQ
 oldpciirq	db 0		; the interrupt line of the controller before we set it
 
 if	?CDAUDIO
-?CDBUFSIZE	equ 10h		; size in sectors
+?CDBUFSIZE	equ 8		; size in sectors
 ?CDVOLCTL	equ 0
 ?AGGRESSIVEIRQ0	equ 0		; unmask IRQ0 upon any "PLAY AUDIO" request
 
@@ -1090,11 +1090,13 @@ endif
 	int	2Fh
 	cmp	bx,20Ah		; 2.10 needed for IOCTL requests
 	jb	@@skip
-if	?DEBUGLOG
-	invoke	printtolog, CStr("MSCDEX > 2.10 installed, allocating buffer to check drives...",0Dh,0Ah)
-endif
 
 	mov	bx,(size CdRmHeadBuf + 0Fh) SHR 4
+if	?DEBUGLOG
+	invoke	printtolog, CStr("MSCDEX > 2.10 installed, allocating ")
+	invoke	printbinword,bx
+	invoke	printtolog, CStr("b-paragraph buffer to check drives...",0Dh,0Ah)
+endif
 	mov	ax,100h		; allocate DOS memory block
 	int	31h
 
@@ -1180,6 +1182,11 @@ endif
 @@:
 	  mov	ax,100h		; allocate DOS memory block
 	  mov	bx,(size CdRmDriveBuf + 0Fh) SHR 4
+if	?DEBUGLOG
+	  invoke printtolog, CStr("Allocating ")
+	  invoke printbinword,bx
+	  invoke printtolog, CStr("b-paragraph drive buffer...",0Dh,0Ah)
+endif
 	  int	31h
 if	?DEBUGLOG
 	  jnc	@F

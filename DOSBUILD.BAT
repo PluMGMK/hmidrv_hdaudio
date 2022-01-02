@@ -30,7 +30,7 @@ jwasmd -bin toolsrc\hmiredir.asm
 if errorlevel 1 goto end
 move hmiredir.bin hmiredir.com
 
-jwasmd -Idrvsrc -bin toolsrc\rayman\soundbin.asm
+jwasmd -Idrvsrc -bin raytools\soundbin.asm
 if errorlevel 1 goto end
 move soundbin.bin soundbin.com
 

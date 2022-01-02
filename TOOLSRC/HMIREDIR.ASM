@@ -164,7 +164,9 @@ entrypoint:
 	lea	di,[bx].fn_record.fn
 @@:
 	lodsb
-	or	al,20h	; make sure it's lowercase
+	.if	al >= 'A' && al <= 'Z'
+	   or	al,20h	; make sure it's lowercase
+	.endif
 	stosb
 	loop	@B
 	.if	bx == offset dirlen
