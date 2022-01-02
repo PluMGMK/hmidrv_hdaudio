@@ -33,10 +33,7 @@ fBackground	dd 1
 wID		dd 0E040h	; an unused ID...
 wTimerID	dd 100Dh	; 16-bit stereo pseudo-DMA timer
 
-; Lists pointed to by capabilities structure
-PortList	dw (DEVSTOENUMERATE+1) dup (-1)
-DMAList		dw 0,-1		; unused
-IRQList		dw 2,5,7,0Ah,-1	; same ones SB16 can use...
+	include	caplists.inc
 ; List from HDA spec, in order from R1-R7 (i.e. reduced to only those that'll fit inside a word...)
 RateList	dw 8000,11025,16000,22050,32000,44100,48000,-1
 NUM_RATES	equ ($ - RateList) SHR 1

@@ -4,6 +4,11 @@
 	.8086
 	.model	tiny
 
+fn_record	struc
+	len	db ?
+	fn	db 0Ch dup (?)	; 8.3 is at most 0Ch = 12 characters!
+fn_record	ends
+
 	.code
 	org	100h
 
@@ -21,6 +26,7 @@ handler	proc
 	push	ax
 	push	cx
 	push	si
+	push	bx
 
 	mov	di,ds
 	mov	es,di
@@ -32,12 +38,16 @@ handler	proc
 	cld
 	repne	scasb
 
+	mov	bx,offset fn_records
 	mov	cx,cs
 	mov	es,cx
 	lea	si,[di-2]
+@@fn_loop:
 	push	si
-	mov	cx,drv_fn_len
-	mov	di,offset drv_filename + drv_fn_len - 1
+	mov	cl,cs:[bx].fn_record.len
+	xor	ch,ch
+	lea	di,[bx].fn_record.fn - 1
+	add	di,cx
 	std
 @@:
 	lodsb
@@ -48,8 +58,9 @@ handler	proc
 	jne	@F
 
 	mov	di,cs:[directory_end]
-	mov	si,offset drv_filename
-	mov	cx,drv_fn_len
+	lea	si,[bx].fn_record.fn
+	mov	cl,cs:[bx].fn_record.len
+	xor	ch,ch
 	cld
 	rep	movsb es:[di],cs:[si]
 	xor	al,al
@@ -57,25 +68,15 @@ handler	proc
 	jmp	@@redirect
 
 @@:
-	mov	cx,det_fn_len
-	mov	di,offset det_filename + det_fn_len - 1
-	std
-@@:
-	lodsb
-	or	al,20h	; make sure it's lowercase
-	scasb
-	loope	@B
-	jne	@@passthrough
-
-	mov	di,cs:[directory_end]
-	mov	si,offset det_filename
-	mov	cx,det_fn_len
-	cld
-	rep	movsb es:[di],cs:[si]
-	xor	al,al
-	stosb
+	lea	bx,[bx+size fn_record]
+	cmp	bx,offset end_fn_records
+	jnb	@@passthrough
+	cmp	cs:[bx].fn_record.len,0
+	je	@@passthrough
+	jmp	@@fn_loop
 
 @@redirect:
+	pop	bx
 	pop	si
 	pop	cx
 	pop	ax
@@ -106,6 +107,7 @@ handler	proc
 	iret
 
 @@passthrough:
+	pop	bx
 	pop	si
 	pop	cx
 	pop	ax
@@ -115,14 +117,17 @@ handler	proc
 	jmp	cs:[old_int21]
 handler	endp
 
-drv_filename	db "hmidrv.386"
-drv_fn_len	equ $-drv_filename
-det_filename	db "hmidet.386"
-det_fn_len	equ $-det_filename
+fn_records:
+drv_fnrec	fn_record <0Ah,"hmidrv.386">
+det_fnrec	fn_record <0Ah,"hmidet.386">
+more_fnrecs	fn_record 8 dup (<?>)
+end_fn_records:
+
 align		4
 old_int21	label dword
 old_int21_off	dw ?
 old_int21_seg	dw ?
+dirlen		db ?
 directory	db 80h dup (?)
 directory_end	dw ?
 
@@ -130,25 +135,63 @@ align		10h
 entrypoint:
 	xor	cx,cx
 	mov	cl,byte ptr ds:[80h]	; number of characters in cmdline args
+	mov	di,81h
+	mov	bx,offset dirlen
+
+@@next_arg:
 	test	cx,cx
-	jbe	@@usage
+	jbe	@@args_done
 
 	mov	al,20h
-	mov	di,81h
 	repe	scasb
-	lea	si,[di-1]		; beginning of first argument
+	lea	si,[di-1]		; beginning of current argument
 	repne	scasb
+	mov	dx,di			; save current position
+	mov	bp,cx			; and number of chars left
+
 	cmp	byte ptr [di],0Dh	; at the end?
 	je	@F
 	dec	di
 @@:
 	sub	di,si
-	mov	cx,di			; length of first argument
+	mov	cx,di			; length of current argument
+	.if	bx != offset dirlen
+	   cmp	cx,0Ch
+	   ja	@@skip_arg		; skip if too long to be a filename...
+	.endif
 
-	mov	di,offset directory
-	rep	movsb
-	xor	al,al
-	stosb	; null-terminate
+	mov	[bx].fn_record.len,cl
+	lea	di,[bx].fn_record.fn
+@@:
+	lodsb
+	or	al,20h	; make sure it's lowercase
+	stosb
+	loop	@B
+	.if	bx == offset dirlen
+	   xor	al,al
+	   stosb	; null-terminate
+	.endif
+
+@@skip_arg:
+	mov	di,dx
+	mov	cx,bp
+
+	cmp	bx,offset dirlen
+	jne	@F
+	mov	bx,offset more_fnrecs
+	jmp	@@next_arg
+
+@@:
+	cmp	[bx].fn_record.len,0
+	jz	@@next_arg
+	lea	bx,[bx+size fn_record]
+	cmp	bx,end_fn_records
+	jb	@@next_arg
+
+@@args_done:
+	cmp	[dirlen],0
+	jz	@@usage
+
 	cmp	[directory+1],':'
 	jne	@@usage
 
@@ -157,8 +200,12 @@ entrypoint:
 	int	21h
 	jc	@@usage
 
+	mov	di,dx
+	mov	cl,[dirlen]
+	xor	ch,ch
+	add	di,cx
 	mov	al,'\'
-	sub	di,2
+	sub	di,1
 	scasb
 	je	@F
 	stosb	; add trailing slash if needed
@@ -194,6 +241,8 @@ entrypoint:
 usagemsg:
 	db	"You need to specify an absolute directory path on the command line."
 	db	0Dh,0Ah,"(No trailing slash unless it's the root of a drive!)"
+	db	0Dh,0Ah,"You may also specify up to eight additional files to redirect."
+	db	0Dh,0Ah,"(Above and beyond the usual HMID*.386 files)"
 	db	0Dh,0Ah,"$"
 
 end	hmiredir

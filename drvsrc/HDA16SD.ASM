@@ -230,7 +230,9 @@ det_exists		endp
 
 ; Get the settings for the selected HD Audio device
 ; Takes no parameters
-; Returns AX = port, CL = IRQ, CH = DMA channel, DX = param
+; Returns AX = port, CL = DMA channel, CH = IRQ, DX = param
+; YES, CL/CH are swapped! The values are passed confusingly through the SOS lib
+; (just to confuse reverse engineers perhaps?)
 det_getsettings		proc near	uses es
 	mov	ax,[statusword]
 	and	ax,111b
@@ -387,6 +389,7 @@ endif
 @@done:
 	mov	ax,[wPort]
 	mov	cx,[wIrqDma]
+	xchg	cl,ch	; VERY IMPORTANT!
 	mov	dx,[wParam]
 if	?DEBUGLOG
 	invoke	closelog
@@ -588,8 +591,8 @@ parseenvstring		proc near
 	.else
 	   jmp	@F	; non-hex character - we're done
 	.endif
-	or	bl,al
 	shl	ebx,4
+	or	bl,al
 	jmp	@B
 
 @@:
