@@ -26,7 +26,6 @@ Other games will likely have quirks of their own!
 
 ## `TODO` list
 * Figure out cause of skipping in looping sounds, and eliminate it
-* Likewise figure out and eliminate cause of CD Audio crackling (may be hardware-specific…)
 * Implement support for volume control of CD Audio even when the drive doesn't have built-in audio capability
 * Implement support for four-channel CDs (playing two channels, which can be selected by running applications)
 * Ensure the detector (for `HMIDET.386`) is working properly - can't use verbose debug output like the driver itself since a detector binary must be less than a page (4 kiB) long to avoid overflowing the buffer provided by the SOS library
@@ -46,5 +45,7 @@ Essentially, the steps are:
 * Likewise assemble the detector, `drvsrc/HDA16SD.ASM`.
 * Use `HMIAPPND` to patch your game's `HMIDRV.386` and `HMIDET.386` files. A DOS EXE of this patcher is included in the source repo, or you can build it yourself from `HMIAPPND.C` (example build scripts are `BOOTSTRP.BAT` for DOS, using Open Watcom, and `BOOTSTRP.SH` for Linux, using GCC).
 * To assist the detector in finding your hardware, it's advisable to set the environment variables `HDA_BUS`, `HDA_DEVICE`, `HDA_FUNCTION`, `HDA_CODEC` and `HDA_WIDGET`. [Japheth's `HDAUtils`](https://github.com/Baron-von-Riedesel/HDAutils) can help you enumerate your hardware and find the appropriate values for these. They should all be specified in hex **without** leading `0x` or anything like that.
+* If you want CD Audio to play through the driver, make sure `SMARTDRV` isn't running on your system.
+  * The driver will not play CD Audio if it detects `SMARTDRV`. If it did, it would lead to buffer underflow and hence unpleasant crackling.
 * If your game has an installer that detects the sound card which must be run from a CD (i.e. you can't directly modify its copy of `HMIDET.386`), you'll need to run `HMIREDIR` with the path to the directory containing your patched `HMIDET.386`. `HMIREDIR` should be assembled as a `.BIN` file and then renamed to `HMIREDIR.COM` to run it as a TSR.
   * There may be other complications with game installers, like custom file formats containing a list of sound cards (instead of just reading them from SOS itself). The `RAYTOOLS` folder contains source for another program to deal with one such binary format, and an `EXAMPLE.BAT` file showing how to deal with it for one particular *Rayman* game. Other Rayman iterations have text formats, and still others have built-in lists in the installer `EXE` itself.

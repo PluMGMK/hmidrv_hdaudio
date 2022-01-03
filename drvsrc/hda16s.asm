@@ -4,7 +4,7 @@
 	.model	small
 	include	comdecs.inc
 
-?DEBUGLOG	equ 1
+?DEBUGLOG	equ 0
 ?CDAUDIO	equ 1
 
 _TEXT	segment	use32
@@ -1068,7 +1068,19 @@ endif
 endif
 
 if	?DEBUGLOG
-	invoke	printtolog, CStr("checking if MSCDEX is available...",0Dh,0Ah)
+	invoke	printtolog, CStr("checking if SMARTDRV is installed...",0Dh,0Ah,"(CD Audio cannot be used with SMARTDRV!)",0Dh,0Ah)
+endif
+	push	ebp
+	mov	ax,4A10h	; SMARTDRV v4.00+ installation check
+	xor	bx,bx
+	mov	cx,0EBABh	; SMARTDRV v4.00+ installation check
+	int	2Fh
+	pop	ebp
+	cmp	ax,0BABEh
+	je	@@skip
+
+if	?DEBUGLOG
+	invoke	printtolog, CStr("no SMARTDRV, checking if MSCDEX is available...",0Dh,0Ah)
 endif
 	mov	ax,1500h	; MSCDEX installation check
 	xor	bx,bx
@@ -1379,24 +1391,6 @@ endif
 	jnc	@F
 
 if	?DEBUGLOG
-;	invoke	printtolog, CStr("fillcdbuf last ran at ")
-;	invoke	printbinword,[lasttimertick_hi]
-;	invoke	printbinword,[lasttimertick_lo]
-;	invoke	printtolog, CStr("b ticks;",0Dh,0Ah)
-;
-;	invoke	printtolog, CStr("i.e. ")
-;	xor	ah,ah		; GET SYSTEM TIME
-;	int	1Ah
-;	sub	dx,[lasttimertick_lo]
-;	sbb	cx,[lasttimertick_hi]
-;	.if	al	; Midnight
-;	   add	dx,0B0h
-;	   adc	cx,18h
-;	.endif
-;	invoke	printbinword,cx
-;	invoke	printbinword,dx
-;	invoke	printtolog, CStr("b ticks ago",0Dh,0Ah)
-
 	invoke	printtolog, CStr("freeing callbacks...",0Dh,0Ah)
 endif
 	mov	ax,200h		; get real mode interrupt vector
@@ -2071,12 +2065,11 @@ fillcdbuf	proc near
 	push	gs
 	pop	es
 
-	; fill the buffer with a well-known scratch pattern so we can check
-	; afterwards how much of it actually got filled in by the CD driver...
+	; clear the buffer
 	push	ecx
 	mov	ecx,CDBUFSIZEDWORDS
 	mov	edi,CdRmDriveBuf.Samples
-	mov	eax,0DEADBEEFh
+	xor	eax,eax
 	rep	stosd
 	pop	ecx
 
@@ -2113,46 +2106,10 @@ if	?DEBUGLOG
 
 @@:
 endif
-
-	push	gs
-	pop	es
-
-	; check for the scratch pattern...
-	push	edx
-	mov	ecx,CDBUFSIZEDWORDS
-	mov	edi,CdRmDriveBuf.Samples
-	mov	eax,0DEADBEEFh
-@@:
-	repne	scasd
-	mov	edx,ecx	; EDX = number of dwords with scratch pattern
-	jecxz	@F
-	repe	scasd	; make sure it's not a fluke...
-	jecxz	@F
-	jmp	@B	; we found more data after the scratch pattern
-@@:
-	lea	eax,[edx+1]
-	xor	edx,edx	; EAX:EDX = number of dwords with scratch pattern plus
-			; one since the driver may have filled a partial dword
-	mov	ecx,CDSECTORSIZE SHR 2
-	div	ecx	; EAX = number of full sectors with scratch pattern
-	.if	edx	; EDX = number of dwords in last non-full sector
-	   inc	eax	; round up the number of sectors
-	.endif
-	pop	edx
-	sub	eax,?CDBUFSIZE
-	neg	eax	; EAX = number of good sectors in buffer
-
-	imul	ecx,eax,CDSECTORSIZE
-	add	ecx,CdRmDriveBuf.Samples
-	mov	gs:[CdRmDriveBuf.dwBufEnd],ecx
-
-	push	ss
-	pop	es
-	mov	edi,ebp
-
-	add	gs:[CdRmDriveBuf.sReq.dwStart],eax
-	;cmp	ecx,?CDBUFSIZE
-	;jb	@@done
+	imul	eax,ecx,CDSECTORSIZE
+	add	eax,CdRmDriveBuf.Samples
+	mov	gs:[CdRmDriveBuf.dwBufEnd],eax
+	add	gs:[CdRmDriveBuf.sReq.dwStart],ecx
 
 	; check if driver advertised prefetch support
 	; if not, there is no point in doing READ LONG PREFETCH, as it will just
@@ -2186,15 +2143,6 @@ endif
 	int	31h
 
 @@done:
-; if	?DEBUGLOG
-; 	xor	ah,ah		; GET SYSTEM TIME
-; 	push	edx
-; 	int	1Ah
-; 	mov	[lasttimertick_lo],dx
-; 	mov	[lasttimertick_hi],cx
-; 	pop	edx
-; endif
-
 	; when the system is not in VM86 mode, the CD driver may carelessly
 	; mask IRQ0, effectively disabling our driver - counteract this here!
 	; (this had me scratching my head for over a week!)
@@ -2414,10 +2362,6 @@ irq_handler	proc
 	jmp	cs:[oldIRQhandler]
 irq_handler	endp
 
-;if	?DEBUGLOG
-;lasttimertick_lo	dw ?
-;lasttimertick_hi	dw ?
-;endif
 ; Called from the timer (16-bit stereo pseudo-DMA)
 ; Takes far pointer to DMA buffer in ES:[EDI]
 ; Returns the address at which we next want it filled in EAX,
