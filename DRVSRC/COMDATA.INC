@@ -33,7 +33,7 @@ fBackground	dd 1
 wID		dd 0E040h	; an unused ID...
 wTimerID	dd 100Dh	; 16-bit stereo pseudo-DMA timer
 
-	include	caplists.inc
+	include	CAPLISTS.INC
 ; List from HDA spec, in order from R1-R7 (i.e. reduced to only those that'll fit inside a word...)
 RateList	dw 8000,11025,16000,22050,32000,44100,48000,-1
 NUM_RATES	equ ($ - RateList) SHR 1

@@ -1,6 +1,6 @@
 ; Common declarations for driver and detector
 
-	include	hda.inc	; from Japheth's MIT-licensed HDAutils
+	include	HDA.INC	; from Japheth's MIT-licensed HDAutils
 
 RMCS struct	;real mode call structure
 union

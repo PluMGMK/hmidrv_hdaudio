@@ -1268,4 +1268,4 @@ endif
 	ret
 free_selector	endp
 
-	include	portlist.inc
+	include	PORTLIST.INC

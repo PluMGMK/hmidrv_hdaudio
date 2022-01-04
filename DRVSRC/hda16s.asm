@@ -2,7 +2,7 @@
 
 	.386
 	.model	small
-	include	comdecs.inc
+	include	COMDECS.INC
 
 ?DEBUGLOG	equ 0
 ?CDAUDIO	equ 1
@@ -16,7 +16,7 @@ hda16s:
 	jmp	entry
 
 align 4
-	include	comdata.inc
+	include	COMDATA.INC
 lpAuxBufFilled	label	fword	; Far pointer to aux buffer when main one not 128-byte-aligned
 dwLastFillEAX	dd 0		; Value returned in EAX at last call to timer function
 dwAuxSelHdl	label	dword
@@ -228,7 +228,7 @@ ftable	dd offset drv_init
 	dd offset drv_getcallfn
 	dd offset drv_setcallfn
 
-	include	comfuncs.inc
+	include	COMFUNCS.INC
 
 if	?DEBUGLOG
 if	?CDAUDIO

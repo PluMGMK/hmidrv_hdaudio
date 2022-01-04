@@ -2,7 +2,7 @@
 
 	.386
 	.model	small
-	include	comdecs.inc
+	include	COMDECS.INC
 
 ; Debug logging cannot currently be enabled for the detector
 ; as it blows up the binary size beyond one page (which is all the lib provides)
@@ -17,7 +17,7 @@ hda16sd:
 	jmp	entry
 
 align 4
-	include	comdata.inc
+	include	COMDATA.INC
 
 ; env strings - keys
 kBus	db "HDA_BUS",0
@@ -76,7 +76,7 @@ ftable	dd offset det_exists
 	dd offset det_verifysettings
 	dd offset det_envstringinit
 
-	include	comfuncs.inc
+	include	COMFUNCS.INC
 
 ; ------------------------------------------------------- ;
 ; ENUM functions from here (called from host application) ;

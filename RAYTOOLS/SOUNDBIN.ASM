@@ -266,7 +266,7 @@ endif
 	int	21h
 
 	.386				; PCI BIOS code uses 32-bit regs...
-	include	portlist.inc
+	include	PORTLIST.INC
 
 usagemsg:
 	db	"You need to specify two arguments on the command line.",0Dh,0Ah
@@ -315,7 +315,7 @@ nohdaudiomsg:
 
 our_devname db	"Intel High Definition Audio",0
 
-	include	caplists.inc
+	include	CAPLISTS.INC
 
 	.data?
 

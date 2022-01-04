@@ -123,15 +123,15 @@ det_fnrec	fn_record <0Ah,"hmidet.386">
 more_fnrecs	fn_record 8 dup (<?>)
 end_fn_records:
 
-align		4
+align		2
 old_int21	label dword
 old_int21_off	dw ?
 old_int21_seg	dw ?
+directory_end	dw ?
 dirlen		db ?
 directory	db 80h dup (?)
-directory_end	dw ?
 
-align		10h
+align		2
 entrypoint:
 	xor	cx,cx
 	mov	cl,byte ptr ds:[80h]	; number of characters in cmdline args
@@ -229,6 +229,7 @@ entrypoint:
 
 	mov	ax,3100h		; TSR with success code
 	mov	dx,offset entrypoint
+	add	dx,0Fh
 	mov	cx,4
 	shr	dx,cl
 	int	21h
