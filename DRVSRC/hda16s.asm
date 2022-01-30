@@ -56,7 +56,6 @@ UncaughtPCI	dd 0
 LastUncaught	dd 0
 PassedIRQs	dd 0
 TotalBCISs	dd 0
-TotalRINTFLs	dd 0
 TotalTicks	dq 0
 LastIRR		dw 0
 LastISR		dw 0
@@ -713,10 +712,7 @@ if	?DEBUGLOG
 	invoke	printtolog, CStr("b were passed through;",0Dh,0Ah,"Of which ")
 	invoke	printbinword,word ptr [TotalBCISs+2]
 	invoke	printbinword,word ptr [TotalBCISs]
-	invoke	printtolog, CStr("b were BCIS;",0Dh,0Ah,"Of which ")
-	invoke	printbinword,word ptr [TotalRINTFLs+2]
-	invoke	printbinword,word ptr [TotalRINTFLs]
-	invoke	printtolog, CStr("b were RINTFL;",0Dh,0Ah)
+	invoke	printtolog, CStr("b were BCIS;",0Dh,0Ah)
 	invoke	printbinword,word ptr [UncaughtIRQs+2]
 	invoke	printbinword,word ptr [UncaughtIRQs]
 	invoke	printtolog, CStr("b UNCAUGHT (timer-detected) IRQs;",0Dh,0Ah)
@@ -727,7 +723,16 @@ if	?DEBUGLOG
 	mov	edx,dword ptr [TotalTicks+4]
 	mov	ebx,[TotalBCISs]
 	.if	ebx <= edx	; the last thing we need here is a #DE!
-	   invoke printtolog, CStr("Could not be calculated",0Dh,0Ah)
+	   invoke printtolog, CStr("Could not be calculated (total ticks:",0Dh,0Ah)
+	   ror	edx,10h
+	   invoke printbinword,dx
+	   ror	edx,10h
+	   invoke printbinword,dx
+	   ror	eax,10h
+	   invoke printbinword,ax
+	   ror	eax,10h
+	   invoke printbinword,ax
+	   invoke printtolog, CStr("b)",0Dh,0Ah)
 	.else
 	   div	ebx
 	   ror	eax,10h
@@ -2486,14 +2491,11 @@ endif
 @@:
 	; don't bother with RINTFL, since we always use send_cmd_wait which polls anyway
 	; - this may change in the future...
-	bt	dx,0		; RINTFL
-	jnc	@F
-if	?DEBUGLOG
-	inc	[TotalRINTFLs]
-endif
+	;bt	dx,0		; RINTFL
+	;jnc	@F
 	;call	handle_rintfl
 
-@@:
+;@@:
 	; write 1s back to the bits we've addressed
 	mov	es:[edi].HDAREGS.rirbsts,dl
 
@@ -2575,7 +2577,9 @@ timer_handler	proc far
 	inc	[TicksSinceBCIS]
 if	?DEBUGLOG
 	inc	dword ptr [TotalTicks]
-	adc	dword ptr [TotalTicks+4],0
+	jnz	@F
+	inc	dword ptr [TotalTicks+4]
+@@:
 endif
 
 	mov	[wMainBufSel],es

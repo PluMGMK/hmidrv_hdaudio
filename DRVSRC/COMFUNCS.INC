@@ -557,7 +557,7 @@ if	?DEBUGLOG
 	invoke	printtolog, CStr("Starting CORB/RIRB DMA engines...",0Dh,0Ah)
 endif
 	or	es:[edi].HDAREGS.corbctl,3	; turn on and enable interrupts
-	or	es:[edi].HDAREGS.rirbctl,7;6	; turn on and enable overrun interrupt
+	or	es:[edi].HDAREGS.rirbctl,6	; turn on and enable overrun interrupt
 	mov	ecx,1000h
 @@:
 	call	wait_timerch2
