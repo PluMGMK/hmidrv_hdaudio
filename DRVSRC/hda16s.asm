@@ -4,8 +4,9 @@
 	.model	small
 	include	COMDECS.INC
 
-?DEBUGLOG	equ 0
+?DEBUGLOG	equ 1
 ?CDAUDIO	equ 1
+?SETIRQLINE	equ 0
 
 _TEXT	segment	use32
 	assume	ds:nothing,es:nothing,gs:nothing,fs:_TEXT
@@ -29,6 +30,11 @@ firststreamoff	dd 0
 dwMainBufPhys	dd 0		; Physical address of DMA buffer passed from host application
 dwMainBufSize	dd 0		; Size of DMA buffer passed from host application
 
+TicksSinceBCIS	dd 0
+lpMainBuf	label	fword
+dwMainBufOff	dd 0
+wMainBufSel	dw 0
+
 mPICeoi		db 0		; EOI signal to send to master PIC
 sPICeoi		db 0		; EOI signal (if any) to send to slave PIC
 
@@ -42,10 +48,23 @@ endif
 irqvec		db 0		; the actual interrupt vector corresponding to our IRQ
 oldpciirq	db 0		; the interrupt line of the controller before we set it
 
+if	?DEBUGLOG
+; IRQ stats
+TotalIRQs	dd 0
+UncaughtIRQs	dd 0
+UncaughtPCI	dd 0
+LastUncaught	dd 0
+PassedIRQs	dd 0
+TotalBCISs	dd 0
+TotalRINTFLs	dd 0
+TotalTicks	dq 0
+LastIRR		dw 0
+LastISR		dw 0
+endif
+
 if	?CDAUDIO
 ?CDBUFSIZE	equ 8		; size in sectors
 ?CDVOLCTL	equ 0
-?AGGRESSIVEIRQ0	equ 0		; unmask IRQ0 upon any "PLAY AUDIO" request
 
 CDSECTORSIZE	equ 930h	; a constant, defined in the Red Book standard
 CDBUFSIZEDWORDS	equ ?CDBUFSIZE * CDSECTORSIZE SHR 2
@@ -294,6 +313,7 @@ endif
 	; fill in the data that the caller gives us
 	mov	[wPort],bx
 	mov	[wIrqDma],cx
+	;mov	[irq],3		; a little trick...
 	mov	[wParam],si
 if	?DEBUGLOG
 	invoke	printtolog, CStr("Initializing driver: successfully set port/irq/dma/param",0Dh,0Ah)
@@ -509,6 +529,7 @@ endif
 	mov	edi,3Ch		; interrupt line
 	int	1Ah
 	jc	@@init_failed
+if	?SETIRQLINE
 	mov	[oldpciirq],cl
 
 	mov	ax,0B10Bh	; write configuration byte
@@ -518,7 +539,35 @@ endif
 	int	1Ah
 	jc	@@init_failed
 if	?DEBUGLOG
-	invoke	printtolog, CStr("PCI IRQ line set",0Dh,0Ah)
+	invoke	printtolog, CStr("PCI IRQ line set to ")
+	movzx	bx,[irq]
+	invoke	printbinword,bx
+	invoke	printtolog, CStr("b (was ")
+	movzx	bx,[oldpciirq]
+	invoke	printbinword,bx
+	invoke	printtolog, CStr("b)",0Dh,0Ah)
+
+	invoke	printtolog, CStr("Readback: PCI IRQ line is ")
+	mov	ax,0B108h	; read configuration byte
+	mov	bx,[wPort]
+	mov	edi,3Ch		; interrupt line
+	int	1Ah
+	xor	ch,ch
+	invoke	printbinword,cx
+	invoke	printtolog, CStr("b",0Dh,0Ah)
+endif
+
+else
+	; I've found my device accepts but ignores changes to the Interrupt Line
+	; register, so just read it and set our own IRQ accordingly.
+	mov	[irq],cl
+if	?DEBUGLOG
+	invoke	printtolog, CStr("set our IRQ to ")
+	xor	ch,ch
+	invoke	printbinword,cx
+	invoke	printtolog, CStr("b, in accordance with PCI config space",0Dh,0Ah)
+endif
+
 endif
 
 	mov	bl,[irq]
@@ -554,13 +603,18 @@ endif
 	mov	edx,offset irq_handler
 ifdef	?FLASHTEK
 	mov	ax,2506h	; Phar Lap / FlashTek: set interrupt to gain control in PM
+	mov	cl,[irqvec]
 else
 	mov	ah,25h		; set interrupt vector
+	mov	al,[irqvec]
 endif
 	int	21h
 	pop	ds
 if	?DEBUGLOG
-	invoke	printtolog, CStr("protected-mode IRQ handler set",0Dh,0Ah)
+	invoke	printtolog, CStr("protected-mode IRQ handler set (vector ")
+	movzx	ax,[irqvec]
+	invoke	printbinword,ax
+	invoke	printtolog, CStr("b)",0Dh,0Ah)
 endif
 
 	xor	eax,eax		; zero wakeen - we don't want interrupts for this...
@@ -616,6 +670,14 @@ endif
 	call	unmask_irq
 if	?DEBUGLOG
 	invoke	printtolog, CStr("interrupts unmasked (in case we're sharing)",0Dh,0Ah)
+	; reset IRQ stats
+	xor	eax,eax
+	mov	[TotalIRQs],eax
+	mov	[UncaughtIRQs],eax
+	mov	[PassedIRQs],eax
+	mov	[TotalBCISs],eax
+	mov	dword ptr [TotalTicks],eax
+	mov	dword ptr [TotalTicks+4],eax
 endif
 
 @@init_failed:
@@ -642,12 +704,62 @@ endif
 	btr	[statusword],0
 
 if	?DEBUGLOG
+	invoke	printtolog, CStr("IRQ stats: ")
+	invoke	printbinword,word ptr [TotalIRQs+2]
+	invoke	printbinword,word ptr [TotalIRQs]
+	invoke	printtolog, CStr("b total caught IRQs;",0Dh,0Ah,"Of which ")
+	invoke	printbinword,word ptr [PassedIRQs+2]
+	invoke	printbinword,word ptr [PassedIRQs]
+	invoke	printtolog, CStr("b were passed through;",0Dh,0Ah,"Of which ")
+	invoke	printbinword,word ptr [TotalBCISs+2]
+	invoke	printbinword,word ptr [TotalBCISs]
+	invoke	printtolog, CStr("b were BCIS;",0Dh,0Ah,"Of which ")
+	invoke	printbinword,word ptr [TotalRINTFLs+2]
+	invoke	printbinword,word ptr [TotalRINTFLs]
+	invoke	printtolog, CStr("b were RINTFL;",0Dh,0Ah)
+	invoke	printbinword,word ptr [UncaughtIRQs+2]
+	invoke	printbinword,word ptr [UncaughtIRQs]
+	invoke	printtolog, CStr("b UNCAUGHT (timer-detected) IRQs;",0Dh,0Ah)
+	invoke	printbinword,word ptr [UncaughtPCI+2]
+	invoke	printbinword,word ptr [UncaughtPCI]
+	invoke	printtolog, CStr("b of these asserted PCI interrupt status",0Dh,0Ah,"Average ticks per BCIS: ")
+	mov	eax,dword ptr [TotalTicks]
+	mov	edx,dword ptr [TotalTicks+4]
+	mov	ebx,[TotalBCISs]
+	.if	ebx <= edx	; the last thing we need here is a #DE!
+	   invoke printtolog, CStr("Could not be calculated",0Dh,0Ah)
+	.else
+	   div	ebx
+	   ror	eax,10h
+	   invoke printbinword,ax
+	   ror	eax,10h
+	   invoke printbinword,ax
+	   invoke printtolog, CStr("b",0Dh,0Ah)
+	.endif
+
 	invoke	printtolog, CStr("checking if HDA register far pointer exists...",0Dh,0Ah)
 endif
 	xor	eax,eax
 	.if	[hdareg_seg] != ax
 	   push	es
 	   call	get_hdareg_ptr
+
+if	?DEBUGLOG
+	   invoke printtolog, CStr("INTCTL was ")
+	   invoke printbinword,word ptr es:[edi+2].HDAREGS.intctl
+	   invoke printbinword,word ptr es:[edi].HDAREGS.intctl
+	   invoke printtolog, CStr("b",0Dh,0Ah)
+	   .if	[UncaughtIRQs]
+	      invoke printtolog, CStr("INTSTS was ")
+	      invoke printbinword,word ptr [LastUncaught+2]
+	      invoke printbinword,word ptr [LastUncaught]
+	      invoke printtolog, CStr("b at last uncaught interrupt",0Dh,0Ah,"PIC IRRs were ")
+	      invoke printbinword,[LastIRR]
+	      invoke printtolog, CStr("b at last uncaught interrupt",0Dh,0Ah,"PIC ISRs were ")
+	      invoke printbinword,[LastISR]
+	      invoke printtolog, CStr("b at last uncaught interrupt",0Dh,0Ah)
+	   .endif
+endif
 
 	   mov	es:[edi].HDAREGS.intctl,eax		; EAX = 0 from above
 	   mov	ecx,1000h
@@ -687,6 +799,7 @@ endif
 	   mov	[mPICeoi],al
 	   mov	[sPICeoi],ah
 
+if	?SETIRQLINE
 	   cmp	[oldpciirq],al
 	   je	@F
 
@@ -701,6 +814,7 @@ endif
 
 	   xor	eax,eax
 	   mov	[oldpciirq],al
+endif
 
 @@:
 	   call	unmask_irq
@@ -1019,11 +1133,11 @@ endif
 	mov	dword ptr gs:[esi].BDLENTRY.qwAddr,edx
 	mov	dword ptr gs:[esi+4].BDLENTRY.qwAddr,eax
 	mov	gs:[esi].BDLENTRY.dwLen,ecx
-	mov	gs:[esi].BDLENTRY.dwFlgs,eax			; no IOC (for now)
+	mov	gs:[esi].BDLENTRY.dwFlgs,1			; IOC
 	mov	dword ptr gs:[esi+size BDLENTRY].BDLENTRY.qwAddr,edx
 	mov	dword ptr gs:[esi+size BDLENTRY+4].BDLENTRY.qwAddr,eax
 	mov	gs:[esi+size BDLENTRY].BDLENTRY.dwLen,ecx
-	mov	gs:[esi+size BDLENTRY].BDLENTRY.dwFlgs,eax	; no IOC (for now)
+	mov	gs:[esi+size BDLENTRY].BDLENTRY.dwFlgs,1	; IOC
 	pop	gs
 
 if	?DEBUGLOG
@@ -1848,8 +1962,8 @@ find_dac_node	endp
 
 mask_irq	proc near	uses eax ecx edx
 	movzx	cx,[irq]
-	bt	cx,3		; high IRQ?
-	jnc	@F
+	cmp	cx,8		; high IRQ?
+	jb	@F
 	mov	dx,0A1h
 	in	al,dx
 	mov	ah,al
@@ -1858,8 +1972,8 @@ mask_irq	proc near	uses eax ecx edx
 	in	al,dx
 	bts	ax,cx
 
-	bt	cx,3		; high IRQ?
-	jnc	@F
+	cmp	cx,8		; high IRQ?
+	jb	@F
 	mov	dx,0A1h
 	mov	al,ah
 @@:
@@ -1870,8 +1984,8 @@ mask_irq	endp
 
 unmask_irq	proc near	uses eax ecx edx
 	movzx	cx,[irq]
-	bt	cx,3		; high IRQ?
-	jnc	@F
+	cmp	cx,8		; high IRQ?
+	jb	@F
 	mov	dx,0A1h
 	in	al,dx
 	mov	ah,al
@@ -1880,8 +1994,8 @@ unmask_irq	proc near	uses eax ecx edx
 	in	al,dx
 	btr	ax,cx
 
-	bt	cx,3		; high IRQ?
-	jnc	@F
+	cmp	cx,8		; high IRQ?
+	jb	@F
 	btr	ax,2
 	out	dx,al		; unmask cascaded interrupt
 	mov	dx,0A1h
@@ -2026,15 +2140,83 @@ handle_fifoe	proc near
 	ret
 handle_fifoe	endp
 
-handle_bcis	proc near
-	; This may not even show up on the terminal if a game is being played!
-	invoke	printstderr, CStr(33o,"[35m","Unexpected Buffer Completion Interrupt (not programmed for this, at least not yet...)",33o,"[37m",0Dh,0Ah)
+; Buffer Completion Interrupt
+handle_bcis	proc near	uses edi
+.if	?DEBUGLOG
+	inc	[TotalBCISs]
+.endif
+
+	xor	edi,edi
+	xchg	edi,[TicksSinceBCIS]
+	test	edi,edi
+	jz	@F
+	ret
+
+@@:
+	; If we're here, it means our timer handler isn't running but the DMA
+	; engine still is, so the user may be hearing annoying looping sound.
+	; This codepath is a legitimate scenario, as the host app may shut down
+	; the SOS timer system while leaving the driver running.
+	; E.g. Rayman does this while playing a cutscene so it can reprogram the
+	; PIT to time the video itself.
+	push	eax
+	push	ecx
+
+	; Anyway, clear the buffer to stop any looping sound.
+	movzx	eax,[wAuxSel]
+	test	eax,eax
+	jnz	@F
+
+	; No aux buffer, see if we have a pointer to the main buffer
+	movzx	eax,[wMainBufSel]
+	test	eax,eax
+	mov	edi,[dwMainBufOff]
+	jz	@@skip	; if not, we can't do anything to improve the situation
+
+@@:
+	push	es
+	push	edi
+	call	get_hdareg_ptr
+	mov	edi,[firststreamoff]
+	mov	ecx,es:[edi].STREAM.dwBufLen
+
+	mov	es,eax	; ES:[EDI] = buffer
+	pop	edi	; (EDI is by definition zero unless using dwMainBufOff)
+	shr	ecx,2
+
+if	?CDAUDIO
+	push	ecx
+	push	edi
+endif
+	xor	eax,eax
+	cld
+	rep	stosd
+
+if	?CDAUDIO
+	pop	edi
+	pop	ecx
+	; We need to keep the CD Audio going, since in the old days one wouldn't
+	; have expected disabling the timer to have any effect on this.
+	; This may call the CD driver several times in one IRQ - not sure what
+	; that will do...
+	bt	[statusword],6
+	jnc	@F
+	call	mixincdaudio
+@@:
+endif
+	pop	es
+
+@@skip:
+	pop	ecx
+	pop	eax
 	ret
 handle_bcis	endp
 
 if	?CDAUDIO
 ; Takes segment pointing to a CdRmDriveBuf in GS
 fillcdbuf	proc near
+	call	mask_irq
+
 	push	ebp
 	sub	esp,size RMCS
 	mov	ebp,esp
@@ -2159,6 +2341,7 @@ endif
 	lea	esp,[ebp+size RMCS]
 	pop	ebp
 
+	call	unmask_irq
 	ret
 fillcdbuf	endp
 
@@ -2274,6 +2457,9 @@ irq_handler	proc
 
 	mov	ds,cs:[lpPortList_seg]
 	assume	ds:_TEXT
+if	?DEBUGLOG
+	inc	[TotalIRQs]
+endif
 	call	get_hdareg_ptr
 	movzx	eax,es:[edi].HDAREGS.statests	; don't care about this...
 	test	eax,eax
@@ -2300,8 +2486,11 @@ irq_handler	proc
 @@:
 	; don't bother with RINTFL, since we always use send_cmd_wait which polls anyway
 	; - this may change in the future...
-	;bt	dx,0		; RINTFL
-	;jnc	@F
+	bt	dx,0		; RINTFL
+	jnc	@F
+if	?DEBUGLOG
+	inc	[TotalRINTFLs]
+endif
 	;call	handle_rintfl
 
 @@:
@@ -2356,6 +2545,9 @@ irq_handler	proc
 	iretd
 
 @@not_ours:
+if	?DEBUGLOG
+	inc	[PassedIRQs]
+endif
 	pop	es
 	pop	ds
 	popad
@@ -2380,6 +2572,14 @@ timer_handler	proc far
 
 	mov	[crst_count],al
 	mov	[srst_count],al
+	inc	[TicksSinceBCIS]
+if	?DEBUGLOG
+	inc	dword ptr [TotalTicks]
+	adc	dword ptr [TotalTicks+4],0
+endif
+
+	mov	[wMainBufSel],es
+	mov	[dwMainBufOff],edi
 
 	push	fs
 	push	esi
@@ -2390,9 +2590,44 @@ timer_handler	proc far
 	mov	esi,edi		; FS:[ESI] points to the main buffer
 
 	call	get_hdareg_ptr
+.if	?DEBUGLOG
+	mov	edx,es:[edi].HDAREGS.intctl
+	mov	eax,es:[edi].HDAREGS.intsts
+	test	edx,eax
+	jz	@F
+	inc	[UncaughtIRQs]
+	mov	[LastUncaught],eax
+
+	mov	al,0Ah		; read IRR
+	out	020h,al
+	out	0A0h,al
+	in	al,0A0h
+	mov	ah,al
+	in	al,020h
+	mov	[LastIRR],ax
+
+	mov	al,0Bh		; read ISR
+	out	020h,al
+	out	0A0h,al
+	in	al,0A0h
+	mov	ah,al
+	in	al,020h
+	mov	[LastISR],ax
+
+	push	ebx
+	mov	ax,0B109h	; read configuration word
+	mov	bx,[wPort]
+	mov	edi,6		; status register
+	int	1Ah
+	bt	cx,3		; interrupt status
+	adc	[UncaughtPCI],0
+	pop	ebx
+@@:
+.endif
 	mov	edi,[firststreamoff]
 	mov	edx,es:[edi].STREAM.dwLinkPos
 	mov	eax,es:[edi].STREAM.dwBufLen
+
 	mov	ecx,eax
 	shr	eax,1		; Fill halfway through the DMA buffer
 	add	eax,edx
@@ -2713,12 +2948,6 @@ int2f_handler	proc
 	  mov	gs:[CdRmDriveBuf.dwBufEnd],0		; force refill
 	  mov	fs:[ebx.PlayReq.wStatus],300h		; done and busy
 
-if	?AGGRESSIVEIRQ0
-	  in	al,21h
-	  btr	ax,0		; unmask IRQ0 = timer
-	  out	21h,al
-endif
-
 	  jmp	@@return
 
 	.elseif fs:[ebx.IOCTLRW.bCmd] == 85h	; STOP AUDIO
@@ -2745,12 +2974,6 @@ endif
 	  mov	gs:[CdRmDriveBuf.dwBufPos],0
 	  mov	gs:[CdRmDriveBuf.dwBufEnd],0		; force refill
 	  mov	fs:[ebx.PlayReq.wStatus],100h		; done, not busy
-
-if	?AGGRESSIVEIRQ0
-	  in	al,21h
-	  btr	ax,0		; unmask IRQ0 = timer
-	  out	21h,al
-endif
 
 	  jmp	@@return
 

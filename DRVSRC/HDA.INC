@@ -40,8 +40,8 @@ statests dw ?
 gsts     dd ?	;+10h
          dd ?,?,?
 intctl   dd ?	;+20h
-         dd ?
 intsts   dd ?
+         dd ?
          dd ?
 walclk   dd ?	;+30h
          dd ?

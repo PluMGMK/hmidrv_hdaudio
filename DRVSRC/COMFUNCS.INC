@@ -354,16 +354,15 @@ endif
 	int	1Ah
 	jc	@F
 	bts	cx,2		; bit 2 = bus master enabled
-	jc	@@busmaster_ok
+	btr	cx,0Ah		; bit 10 = interrupt disable
 
 if	?DEBUGLOG
-	invoke	printtolog, CStr("Setting busmaster flag...",0Dh,0Ah)
+	invoke	printtolog, CStr("Setting busmaster and clearing interrupt disable flag...",0Dh,0Ah)
 endif
 	mov	ax,0B10Ch	; write configuration word
 	int	1Ah
 	jc	@F
 
-@@busmaster_ok:
 if	?DEBUGLOG
 	invoke	printtolog, CStr("Busmaster flag set",0Dh,0Ah)
 endif
@@ -558,7 +557,7 @@ if	?DEBUGLOG
 	invoke	printtolog, CStr("Starting CORB/RIRB DMA engines...",0Dh,0Ah)
 endif
 	or	es:[edi].HDAREGS.corbctl,3	; turn on and enable interrupts
-	or	es:[edi].HDAREGS.rirbctl,6	; turn on and enable overrun interrupt
+	or	es:[edi].HDAREGS.rirbctl,7;6	; turn on and enable overrun interrupt
 	mov	ecx,1000h
 @@:
 	call	wait_timerch2
@@ -973,6 +972,8 @@ send_cmd_wait	proc near	uses es gs edi
 	.while	ax == es:[edi].HDAREGS.rirbwp
 	   call	wait_timerch2
 	.endw
+	; reset the controller interrupt status
+	or	es:[edi].HDAREGS.rirbsts,1
 
 	movzx	eax,es:[edi].HDAREGS.rirbwp
 	lgs	edi,[lpRirb]

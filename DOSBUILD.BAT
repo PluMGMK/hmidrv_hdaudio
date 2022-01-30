@@ -11,6 +11,7 @@ if errorlevel 1 goto end
 hmiappnd.exe oldfile=C:\RAYMAN\HMIDRV.OLD newfile=C:\RAYMAN\HMIDRV.386 drvf:E040=hda16s.bin drvr:E040=hdw16s.bin
 hmiappnd.exe oldfile=C:\RAYKIT\HMIDRV.OLD newfile=C:\RAYKIT\HMIDRV.386 drvf:E040=hda16s.bin drvr:E040=hdw16s.bin
 hmiappnd.exe oldfile=C:\EDUGB1\HMIDRV.OLD newfile=C:\EDUGB1\HMIDRV.386 drvf:E040=hda16s.bin drvr:E040=hdw16s.bin
+hmiappnd.exe oldfile=C:\EDUGB3\HMIDRV.OLD newfile=C:\EDUGB3\HMIDRV.386 drvf:E040=hda16s.bin drvr:E040=hdw16s.bin
 
 :detector
 jwasmd -bin drvsrc\hda16sd.asm
@@ -24,6 +25,7 @@ if errorlevel 1 goto end
 hmiappnd.exe oldfile=C:\RAYMAN\HMIDET.OLD newfile=C:\RAYMAN\HMIDET.386 drvf:E040=hda16sd.bin drvr:E040=hdw16sd.bin
 hmiappnd.exe oldfile=C:\RAYKIT\HMIDET.OLD newfile=C:\RAYKIT\HMIDET.386 drvf:E040=hda16sd.bin drvr:E040=hdw16sd.bin
 hmiappnd.exe oldfile=C:\EDUGB1\HMIDET.OLD newfile=C:\EDUGB1\HMIDET.386 drvf:E040=hda16sd.bin drvr:E040=hdw16sd.bin
+hmiappnd.exe oldfile=C:\EDUGB3\HMIDET.OLD newfile=C:\EDUGB3\HMIDET.386 drvf:E040=hda16sd.bin drvr:E040=hdw16sd.bin
 
 :redirector
 jwasmd -bin toolsrc\hmiredir.asm
