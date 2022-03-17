@@ -408,7 +408,7 @@ if	?DEBUGLOG
 endif
 	mov	es:[edi].HDAREGS.corbwp,0	; reset CORB write pointer
 	mov	es:[edi].HDAREGS.rirbwp,8000h	; reset RIRB write pointer
-	mov	es:[edi].HDAREGS.rirbric,1	; raise an IRQ on *every* response!
+	mov	es:[edi].HDAREGS.rirbric,2	; putting 1 here freezes QEMU (and presumably some actual hardware)
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("Resetting CORB read pointer...",0Dh,0Ah)

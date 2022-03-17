@@ -221,6 +221,20 @@ endif
 	.if	eax
 	   mov	[wPort],ax	; make sure B/D/F are fully specified
 	   or	[statusword],111b
+
+	   ; query the hardware for the IRQ
+	   mov	bx,ax
+	   mov	ax,0B108h	; read configuration byte
+	   mov	edi,3Ch		; interrupt line
+	   int	1Ah
+	   jc	@F
+
+	   .if	cl > 1 && cl < 10h
+	      mov [irq],cl
+	      bts [statusword],3
+	   .endif
+@@:
+	   movzx eax,[wPort]
 	.endif
 if	?DEBUGLOG
 	invoke	closelog
@@ -247,6 +261,7 @@ if	?DEBUGLOG
 	.endif
 endif
 
+@@:
 	bts	[statusword],3
 	jc	@F
 if	?DEBUGLOG
@@ -356,6 +371,7 @@ if	?DEBUGLOG
 	invoke printtolog, CStr("CORB/RIRB buffer freed",0Dh,0Ah)
 endif
 
+	call	get_hdareg_ptr
 @@corbstopped:
 	btr	es:[edi].HDAREGS.gctl,0
 	jnc	@@cntrlr_done
@@ -464,13 +480,10 @@ det_envstringinit	endp
 ; Search for a pin widget of type lineout/headphone/speaker on the current codec
 ; If found, returns it in AL, with CF clear
 ; If not found, CF is set
-find_output_pin		proc near	uses ebx edi esi ebp
+find_output_pin		proc near	uses ebx edi esi ebp ecx
 if	?DEBUGLOG
 	invoke	printtolog, CStr("widget not specified, looking for a suitable one on this codec...",0Dh,0Ah)
 endif
-
-	xor	ebx,ebx		; keep latest candidate here
-	xor	edi,edi		; and its default device type here
 
 	bts	[statusword],8
 	jc	@F
@@ -482,6 +495,9 @@ endif
 	jc	@@failed
 
 @@:
+	xor	ebx,ebx		; keep latest candidate here
+	xor	edi,edi		; and its default device type here
+
 	mov	[node],0	; query root node
 	call	get_subnodes
 	mov	ebp,edx

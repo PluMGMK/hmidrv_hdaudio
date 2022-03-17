@@ -6,7 +6,7 @@
 
 ?DEBUGLOG	equ 1
 ?CDAUDIO	equ 1
-?SETIRQLINE	equ 0
+?SETIRQLINE	equ 1
 
 _TEXT	segment	use32
 	assume	ds:nothing,es:nothing,gs:nothing,fs:_TEXT
@@ -312,7 +312,6 @@ endif
 	; fill in the data that the caller gives us
 	mov	[wPort],bx
 	mov	[wIrqDma],cx
-	;mov	[irq],3		; a little trick...
 	mov	[wParam],si
 if	?DEBUGLOG
 	invoke	printtolog, CStr("Initializing driver: successfully set port/irq/dma/param",0Dh,0Ah)
@@ -1967,6 +1966,9 @@ find_dac_node	endp
 
 mask_irq	proc near	uses eax ecx edx
 	movzx	cx,[irq]
+	.if	cx == 2
+	   mov	cx,9
+	.endif
 	cmp	cx,8		; high IRQ?
 	jb	@F
 	mov	dx,0A1h
@@ -1989,6 +1991,9 @@ mask_irq	endp
 
 unmask_irq	proc near	uses eax ecx edx
 	movzx	cx,[irq]
+	.if	cx == 2
+	   mov	cx,9
+	.endif
 	cmp	cx,8		; high IRQ?
 	jb	@F
 	mov	dx,0A1h
