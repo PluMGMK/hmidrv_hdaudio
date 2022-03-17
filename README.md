@@ -28,8 +28,6 @@ Other games will likely have quirks of their own!
 * Figure out cause of skipping in looping sounds, and eliminate it
 * Implement support for volume control of CD Audio even when the drive doesn't have built-in audio capability
 * Implement support for four-channel CDs (playing two channels, which can be selected by running applications)
-* Ensure the detector (for `HMIDET.386`) is working properly - can't use verbose debug output like the driver itself since a detector binary must be less than a page (4 kiB) long to avoid overflowing the buffer provided by the SOS library
-  * The env variable parsing is now working properly, but I'm not sure about the pin widget detection…
 * [MAYBE] look into using EMS instead of Conventional Memory for CD Audio buffers
   * Right now, any game that hogs Conventional Memory can't play CD Audio through this driver at all.
   * Rayman Junior is an interesting case, in that I've found when `EMM386.EXE` is installed, I can play CD Audio with an 8-sector buffer, but this is simply impossible without an EMM.
