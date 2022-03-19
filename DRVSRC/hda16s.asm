@@ -63,7 +63,7 @@ endif
 
 if	?CDAUDIO
 ?CDBUFSIZE	equ 8		; size in sectors
-?CDVOLCTL	equ 0
+?CDVOLCTL	equ 1
 
 CDSECTORSIZE	equ 930h	; a constant, defined in the Red Book standard
 CDBUFSIZEDWORDS	equ ?CDBUFSIZE * CDSECTORSIZE SHR 2
@@ -1391,6 +1391,30 @@ if	?DEBUGLOG
 endif
 	  inc	es:[CdRmHeadBuf.bDrives]
 
+	  mov	bh,gs:CdRmDriveBuf.sInfo.Info[2].bVolume
+	  mov	bl,gs:CdRmDriveBuf.sInfo.Info[0].bVolume
+	  test	bx,bx
+	  jnz	@@next
+
+if	?DEBUGLOG
+	  invoke printtolog, CStr("drive is muted, resetting to max volume...",0Dh,0Ah)
+endif
+	  
+	  mov	es:[CdRmHeadBuf.sReq.bLen],size IOCTLRW
+	  mov	es:[CdRmHeadBuf.sReq.bCmd],0Ch		; IOCTL WRITE
+	  ;mov	es:[CdRmHeadBuf.sReq.wBufSeg],bx
+	  ;mov	es:[CdRmHeadBuf.sReq.wBufOff],CdRmDriveBuf.sInfo
+	  ;mov	es:[CdRmHeadBuf.sReq.wCount],size AudInfo
+	  mov	gs:CdRmDriveBuf.sInfo.Info[0].bVolume,0FFh
+	  mov	gs:CdRmDriveBuf.sInfo.Info[2].bVolume,0FFh
+
+	  mov	es:[CdRmHeadBuf.sRmCall.rAX],1510h	; send device request 
+	  mov	ax,300h		; simulate real mode interrupt
+	  mov	bx,2Fh
+	  xor	cx,cx
+	  mov	edi,CdRmHeadBuf.sRmCall
+	  int	31h
+
 @@next:
 	  ; next drive
 	  inc	es:[CdRmHeadBuf.sRmCall.rCX]
@@ -2373,11 +2397,11 @@ mixincdaudio	proc near	uses gs esi ebx eax edx
 	bt	gs:[CdRmDriveBuf.wStatus],9	; audio playing?
 	jnc	@@driveloop			; if not, move to next drive
 
-	mov	bl,gs:CdRmDriveBuf.sInfo.Info.bVolume[2]
+	mov	bl,gs:CdRmDriveBuf.sInfo.Info[2].bVolume
 	mov	bh,bl	; BX = multiplication factor for right channel
 	shr	bx,1	; FFFFh --> 7FFFh, etc. (for signed multiplication)
 	ror	ebx,10h
-	mov	bl,gs:CdRmDriveBuf.sInfo.Info.bVolume[0]
+	mov	bl,gs:CdRmDriveBuf.sInfo.Info[0].bVolume
 	mov	bh,bl	; BX = multiplication factor for left channel
 	shr	bx,1	; FFFFh --> 7FFFh, etc. (for signed multiplication)
 

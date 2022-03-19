@@ -19,15 +19,14 @@ Other games will likely have quirks of their own!
 * Only tested with `RATIONAL`-type (i.e. DOS/4GW-like) DOS extenders, not `FLASHTECK` [*[sic]*](https://github.com/Wohlstand/SOSPLAY/blob/master/sos3/include/sos.h#L574) (i.e. FlashTek X-32VM and similar).
   * CD Audio won't work under FlashTek unless there is a DPMI host running behind it.
 * Currently only supports 16-bit stereo playback
-* CD Audio requires your drive to support raw reading (and support is currently incomplete - see below)
+* CD Audio requires your drive to support raw reading
+* CD Audio only supports two-channel CDs, not four-channel (did anyone ever *actually* use these I wonder?), and ignores requests by software to swap / duplicate channels
 * Cannot run under Windows 3.1/9x with the aforementioned HDA sound driver running - they will conflict
 * Detector doesn't seem to be useful in combination with installer programs like Rayman's, which contain a fixed list of known sound cards (so they will basically ignore this new unknown one even if it's detected)
   * Most versions of Rayman have an external file that can be modified to include references to this driver. If other games do this, then each game will need some work to get it working with this driver (i.e. it's unfortunately not plug and play).
 
 ## `TODO` list
 * Figure out cause of skipping in looping sounds, and eliminate it
-* Implement support for volume control of CD Audio even when the drive doesn't have built-in audio capability
-* Implement support for four-channel CDs (playing two channels, which can be selected by running applications)
 * [MAYBE] look into using EMS instead of Conventional Memory for CD Audio buffers
   * Right now, any game that hogs Conventional Memory can't play CD Audio through this driver at all.
   * Rayman Junior is an interesting case, in that I've found when `EMM386.EXE` is installed, I can play CD Audio with an 8-sector buffer, but this is simply impossible without an EMM.
