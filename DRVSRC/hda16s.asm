@@ -64,6 +64,7 @@ endif
 if	?CDAUDIO
 ?CDBUFSIZE	equ 8		; size in sectors
 ?CDVOLCTL	equ 1
+?CDCHANCTL	equ 1		; support more than two channels?
 
 CDSECTORSIZE	equ 930h	; a constant, defined in the Red Book standard
 CDBUFSIZEDWORDS	equ ?CDBUFSIZE * CDSECTORSIZE SHR 2
@@ -1391,29 +1392,23 @@ if	?DEBUGLOG
 endif
 	  inc	es:[CdRmHeadBuf.bDrives]
 
-	  mov	bh,gs:CdRmDriveBuf.sInfo.Info[2].bVolume
-	  mov	bl,gs:CdRmDriveBuf.sInfo.Info[0].bVolume
-	  test	bx,bx
+	  mov	eax,dword ptr gs:CdRmDriveBuf.sInfo.Info
+	  mov	ebx,dword ptr gs:CdRmDriveBuf.sInfo.Info+4
+	  or	eax,ebx
 	  jnz	@@next
 
 if	?DEBUGLOG
-	  invoke printtolog, CStr("drive is muted, resetting to max volume...",0Dh,0Ah)
+	  invoke printtolog, CStr("drive's audio channel control is null - assuming it doesn't support audio",0Dh,0Ah,"populating our structure with defaults...",0Dh,0Ah)
 endif
 	  
-	  mov	es:[CdRmHeadBuf.sReq.bLen],size IOCTLRW
-	  mov	es:[CdRmHeadBuf.sReq.bCmd],0Ch		; IOCTL WRITE
-	  ;mov	es:[CdRmHeadBuf.sReq.wBufSeg],bx
-	  ;mov	es:[CdRmHeadBuf.sReq.wBufOff],CdRmDriveBuf.sInfo
-	  ;mov	es:[CdRmHeadBuf.sReq.wCount],size AudInfo
 	  mov	gs:CdRmDriveBuf.sInfo.Info[0].bVolume,0FFh
+	  mov	gs:CdRmDriveBuf.sInfo.Info[0].bInChan,0
 	  mov	gs:CdRmDriveBuf.sInfo.Info[2].bVolume,0FFh
-
-	  mov	es:[CdRmHeadBuf.sRmCall.rAX],1510h	; send device request 
-	  mov	ax,300h		; simulate real mode interrupt
-	  mov	bx,2Fh
-	  xor	cx,cx
-	  mov	edi,CdRmHeadBuf.sRmCall
-	  int	31h
+	  mov	gs:CdRmDriveBuf.sInfo.Info[2].bInChan,1
+	  mov	gs:CdRmDriveBuf.sInfo.Info[4].bVolume,0FFh
+	  mov	gs:CdRmDriveBuf.sInfo.Info[4].bInChan,2
+	  mov	gs:CdRmDriveBuf.sInfo.Info[6].bVolume,0FFh
+	  mov	gs:CdRmDriveBuf.sInfo.Info[6].bInChan,3
 
 @@next:
 	  ; next drive
@@ -2413,9 +2408,35 @@ mixincdaudio	proc near	uses gs esi ebx eax edx
 	.if	esi >= gs:[CdRmDriveBuf.dwBufEnd]
 	   call	fillcdbuf
 	   mov	esi,CdRmDriveBuf.Samples
-	   ; TODO: read Q-channel to see how to arrange the samples
 	.endif
+
+if	?CDCHANCTL
+	mov	edx,2	; step size in words
+	.if	gs:[CdRmDriveBuf.sQChan.bCtlAdr] & 80h ; four channels?
+	   mov	dl,4
+	.endif
+	; pull in the input for right channel
+	movzx	ecx,gs:CdRmDriveBuf.sInfo.Info[2].bInChan
+	.if	ecx >= edx
+	   xor	ax,ax
+	.else
+	   mov	ax,gs:[esi+ecx*2]
+	.endif
+	shl	eax,10h
+	; and for left channel
+	movzx	ecx,gs:CdRmDriveBuf.sInfo.Info[0].bInChan
+	.if	ecx >= edx
+	   xor	ax,ax
+	.else
+	   mov	ax,gs:[esi+ecx*2]
+	.endif
+	; step forward
+	lea	esi,[esi+edx*2]
+else
+	; assumes CD is stereo (not four-channel)
 	lodsd	gs:[esi]
+endif
+
 if	?CDVOLCTL
 	xor	edx,edx
 	imul	bx

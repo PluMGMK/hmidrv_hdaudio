@@ -20,7 +20,6 @@ Other games will likely have quirks of their own!
   * CD Audio won't work under FlashTek unless there is a DPMI host running behind it.
 * Currently only supports 16-bit stereo playback
 * CD Audio requires your drive to support raw reading
-* CD Audio only supports two-channel CDs, not four-channel (did anyone ever *actually* use these I wonder?), and ignores requests by software to swap / duplicate channels
 * Cannot run under Windows 3.1/9x with the aforementioned HDA sound driver running - they will conflict
 * Detector doesn't seem to be useful in combination with installer programs like Rayman's, which contain a fixed list of known sound cards (so they will basically ignore this new unknown one even if it's detected)
   * Most versions of Rayman have an external file that can be modified to include references to this driver. If other games do this, then each game will need some work to get it working with this driver (i.e. it's unfortunately not plug and play).
