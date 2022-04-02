@@ -4,7 +4,7 @@
 	.model	small
 	include	COMDECS.INC
 
-?DEBUGLOG	equ 1
+?DEBUGLOG	equ 0
 ?CDAUDIO	equ 1
 ?SETIRQLINE	equ 1
 
@@ -2171,9 +2171,9 @@ handle_fifoe	endp
 
 ; Buffer Completion Interrupt
 handle_bcis	proc near	uses edi
-.if	?DEBUGLOG
+if	?DEBUGLOG
 	inc	[TotalBCISs]
-.endif
+endif
 
 	xor	edi,edi
 	xchg	edi,[TicksSinceBCIS]
@@ -2644,7 +2644,7 @@ endif
 	mov	esi,edi		; FS:[ESI] points to the main buffer
 
 	call	get_hdareg_ptr
-.if	?DEBUGLOG
+if	?DEBUGLOG
 	mov	edx,es:[edi].HDAREGS.intctl
 	mov	eax,es:[edi].HDAREGS.intsts
 	test	edx,eax
@@ -2677,7 +2677,7 @@ endif
 	adc	[UncaughtPCI],0
 	pop	ebx
 @@:
-.endif
+endif
 	mov	edi,[firststreamoff]
 	mov	edx,es:[edi].STREAM.dwLinkPos
 	mov	eax,es:[edi].STREAM.dwBufLen
