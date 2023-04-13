@@ -969,6 +969,9 @@ send_cmd_wait	proc near	uses es gs edi
 	call	send_cmd
 	; now we play the waiting game...
 	call	get_hdareg_ptr
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Command sent...",0Dh,0Ah)
+endif
 	.while	ax == es:[edi].HDAREGS.rirbwp
 	   call	wait_timerch2
 	.endw
@@ -978,12 +981,20 @@ send_cmd_wait	proc near	uses es gs edi
 	movzx	eax,es:[edi].HDAREGS.rirbwp
 	lgs	edi,[lpRirb]
 	mov	eax,gs:[edi+eax*8]
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Response received!",0Dh,0Ah)
+endif
 
 	ret
 send_cmd_wait	endp
 
 ; wait a bit (copied from "dowait" in Japheth's MIT-licensed hdaplay)
 wait_timerch2	proc near	uses eax ecx
+	; don't let it beep while this is going on!
+	in	al,61h
+	and	al,0FCh
+	out	61h,al
+
 	mov	ecx,100h
 @@:
 	db	0F3h,90h	; pause (mnemonic not accepted by uasm in "386" mode...)
