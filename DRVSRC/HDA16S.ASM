@@ -308,6 +308,7 @@ endif
 ; Returns nothing
 drv_init	proc near
 if	?DEBUGLOG
+	;invoke	logtostderr
 	invoke	openlog, CStr("HDA_INIT.LOG"),0
 endif
 	; fill in the data that the caller gives us
@@ -1509,7 +1510,6 @@ drv_start	endp
 drv_stop	proc near
 if	?DEBUGLOG
 	invoke	openlog, CStr("HDA_STOP.LOG"),0
-	;invoke	logtostderr
 	invoke	printtolog, CStr("checking if driver is initialized...",0Dh,0Ah)
 endif
 	bt	[statusword],0
@@ -2266,6 +2266,25 @@ fillcdbuf	proc near
 	mov	[ebp].RMCS.rES,bx
 	mov	[ebp].RMCS.rBX,CdRmDriveBuf.sReq
 	mov	[ebp].RMCS.rCSIP,ecx
+
+	; These flags are interesting... For int 31h function 0302h, PMODE/W
+	; uses RMCS.rFlags to build the IRET frame, but uses the caller's flags
+	; when it actually switches to Real Mode. So everything's fine until the
+	; Real Mode procedure IRETs (or, in the case of MSCDEX, pops the flags
+	; first, then does some other stuff, then RETF 02s!). Once that IRET / 
+	; POPF happens in Real Mode, then suddenly whatever garbage was in the
+	; RMCS starts dictating the machine behaviour. In particular, if bit 8
+	; was set, you start getting #DB exceptions every instruction! What's
+	; worse, PMODE/W, despite ignoring them for the transition to Real Mode,
+	; then carries these newly-set flags through the switch back to
+	; Protected Mode without question. This can result in #DBs within its
+	; kernel code, which in certain versions of Rayman result in very
+	; unceremonious crashes!
+	; The bottom line is, we need to set the flags here instead of accepting
+	; whatever garbage is in the RMCS. I'm slightly ashamed that it took me
+	; so long to realize that...
+	pushf
+	pop	[ebp].RMCS.rFlags
 
 	mov	ecx,gs:[CdRmDriveBuf.sStat.dwEnd]
 	sub	ecx,gs:[CdRmDriveBuf.sReq.dwStart]
