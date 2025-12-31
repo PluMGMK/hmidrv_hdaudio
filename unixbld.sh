@@ -2,7 +2,7 @@
 
 uasm -bin DRVSRC/HDA16S.ASM
 mv -v HD{A,W}16S.BIN
-uasm -bin -D?FLASHTEK=1 DRVSRC/HDA16S.asm
+uasm -bin -D?FLASHTEK=1 DRVSRC/HDA16S.ASM
 ./hmiappnd oldfile=$HOME/Games/rayman-forever/Rayman/HMIDRV.OLD newfile=$HOME/Games/rayman-forever/Rayman/HMIDRV.386 drvf:E040=HDA16S.BIN drvr:E040=HDW16S.BIN
 
 uasm -bin DRVSRC/HDA16SD.ASM
