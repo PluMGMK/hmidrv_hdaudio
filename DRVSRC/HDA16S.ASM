@@ -5,6 +5,7 @@
 	include	COMDECS.INC
 
 ?DEBUGLOG	equ 0
+?DEBUGAUX	equ 0
 ?CDAUDIO	equ 1
 ?SETIRQLINE	equ 1
 

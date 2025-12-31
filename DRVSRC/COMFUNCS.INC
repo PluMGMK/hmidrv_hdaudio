@@ -59,6 +59,10 @@ printtolog	proc near stdcall	uses ebx edx	pszOutStr:dword
 printtolog	endp
 
 openlog		proc near stdcall	uses eax ecx edx	pszFilename:dword,append:byte
+if	?DEBUGAUX
+	; just log to stdaux
+	mov	[debuglog_hdl],3
+else
 	.if	[append]
 	  mov	ax,3D02h	; OPEN R/W
 	.else
@@ -76,6 +80,7 @@ openlog		proc near stdcall	uses eax ecx edx	pszFilename:dword,append:byte
 	invoke	printtolog, CStr("Couldn't open ")
 	invoke	printtolog, [pszFilename]
 	invoke	printtolog, CStr(" for writing, logging to stderr...",0Dh,0Ah)
+endif
 	ret
 openlog		endp
 
@@ -125,6 +130,9 @@ printnodetype	proc near stdcall	bNodeType:byte
 printnodetype	endp
 
 closelog	proc near	uses eax ebx
+if	?DEBUGAUX
+	; do nothing, just leave stdaux open
+else
 	mov	ah,3Eh		; CLOSE
 	mov	ebx,[debuglog_hdl]
 	cmp	ebx,-1
@@ -138,6 +146,7 @@ closelog	proc near	uses eax ebx
 	.endif
 	mov	[debuglog_hdl],-1
 @@:
+endif
 	ret
 closelog	endp
 
