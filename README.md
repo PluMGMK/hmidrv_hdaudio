@@ -20,6 +20,7 @@ Other games will likely have quirks of their own!
 * Cannot run under Windows 3.1/9x with the [Windows HDA sound driver](http://www.win3x.org/win3board/viewtopic.php?t=17965) running - they will conflict
 * Detector doesn't seem to be useful in combination with certain game installers which contain a fixed list of known sound cards (so they will basically ignore this new unknown one even if it's detected)
   * Most versions of Rayman have an external file that can be modified to include references to this driver. If other games do this, then each game will need some work to get it working with this driver (i.e. it's unfortunately not plug and play).
+* It is possible to get an illegal instruction crash on Windows 98 if running on a system with no floppy drive, but the "Standard Floppy Disk Controller" driver installed (cf. https://github.com/PluMGMK/hmidrv_hdaudio/issues/2#issuecomment-3691672762). This can be readily solved by removing the floppy controller driver.
 
 ## Build / Usage instructions
 Example build scripts are included for DOS (`DOSBUILD.BAT`) and Linux (`unixbld.sh`), but it could also be built on Windows without much additional effort (but at any rate, the driver itself is only useful on DOS!).
