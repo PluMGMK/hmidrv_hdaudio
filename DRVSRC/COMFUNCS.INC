@@ -774,9 +774,30 @@ endif
 	jnz	@F
 
 	; check if XMS is available
-	mov	ax,4300h
-	int	2Fh
-	cmp	al,80h
+if	?DEBUGAUX
+	int	3
+endif
+	mov	[ebp].RMCS.rAX,4300h	; XMS installation check
+	mov	[ebp].RMCS.rEDX,ebx	; stash EBX
+	mov	[ebp].RMCS.rECX,ecx	; stash ECX
+	mov	[ebp].RMCS.rEDI,edi	; stash EDI
+	push	es
+
+	push	ss
+	pop	es
+	mov	edi,ebp
+	mov	bx,2Fh
+	xor	cx,cx
+	mov	ax,0300h		; simulate real-mode interrupt
+	int	31h
+
+	pop	es
+	mov	ebx,[ebp].RMCS.rEDX	; restore EBX
+	mov	ecx,[ebp].RMCS.rECX	; restore ECX
+	mov	edi,[ebp].RMCS.rEDI	; restore EDI
+	jc	@@simfail
+
+	cmp	byte ptr [ebp].RMCS.rAX,80h
 	jne	@@noxms
 
 	mov	[ebp].RMCS.rAX,4310h	; get XMS driver address
