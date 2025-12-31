@@ -1,16 +1,12 @@
 # HMIDRV_HDAudio
 This is a driver for [Intel High Definition Audio](https://en.wikipedia.org/wiki/Intel_High_Definition_Audio) controllers, for use with Human Machine Interface's (HMI's) Sound Operating System **version 3**, perhaps better known as `HMIDRV.386`.
 The project was inspired by [Japheth's `HDAUtils`](https://github.com/Baron-von-Riedesel/HDAutils), and the idea is to give old DOS programs / games (such as Rayman) the ability to play sound through modern hardware.
-So far, it has been tested with the aforementioned Rayman, on MS-DOS 6.2 running on a PC from 2014 with [this motherboard](https://us.msi.com/Motherboard/Z97-GAMING-3) (to clarify, I'm booting DOS *natively* on the system, not with QEMU or the like).
-
-The driver can interface with `HDATSR.EXE` from the Windows 3.1 HDA sound driver by Watlers World, available [here](http://turkeys4me.byethost4.com/programs/index.htm).
-If this TSR is not present, the driver can attempt to allocate its own buffers using XMS (or directly from the DOS extender if paging is off).
-That said, the TSR is the most sure-fire way to ensure the driver has memory available for all the necessary buffers.
+So far, it has been tested with the aforementioned Rayman and its spin-offs, on MS-DOS 6.2 and MS-DOS 7.1, all running on a PC from 2014 with [this motherboard](https://us.msi.com/Motherboard/Z97-GAMING-3) (to clarify, I'm booting DOS *natively* on the system, not with QEMU or the like). It is also verified working under Windows 3.1 and Windows 98 on those respective DOS versions, as long as there is no conflicting Windows sound driver installed.
 
 The driver can also hook MSCDEX to mix CD Audio into the stream, since modern optical drives tend not to have built-in analogue music players with direct connections to the sound card anymore.
 
 At this point, the performance of the detector and driver seems satisfactory on *Rayman Designer*, which can detect arbitrary sound cards on startup using `HMIDET.386`.
-When both `HMIDRV.386` and `HMIDET.386` are patched, a fresh install of Rayman Designer can detect HD Audio hardware, and after closing and reopening, play sound and CD Audio through it.
+When both `HMIDRV.386` and `HMIDET.386` are patched, a fresh install of Rayman Designer can detect HD Audio hardware, and play sound and CD Audio through it.
 Further patching is required for *Rayman Junior*, which needs changes to `SOUND.BIN` (using the `SOUNDBIN.ASM` utility in the `RAYTOOLS` folder), and has an installer that only runs from CD, necessitating the use of the `HMIREDIR` tool (see `RAYTOOLS/EXAMPLE.BAT` for how I did it).
 Other games will likely have quirks of their own!
 
@@ -21,7 +17,7 @@ Other games will likely have quirks of their own!
   * CD Audio won't work under FlashTek unless there is a DPMI host running behind it.
 * Currently only supports 16-bit stereo playback
 * CD Audio requires your drive to support raw reading
-* Cannot run under Windows 3.1/9x with the aforementioned HDA sound driver running - they will conflict
+* Cannot run under Windows 3.1/9x with the [Windows HDA sound driver](http://www.win3x.org/win3board/viewtopic.php?t=17965) running - they will conflict
 * Detector doesn't seem to be useful in combination with certain game installers which contain a fixed list of known sound cards (so they will basically ignore this new unknown one even if it's detected)
   * Most versions of Rayman have an external file that can be modified to include references to this driver. If other games do this, then each game will need some work to get it working with this driver (i.e. it's unfortunately not plug and play).
 
