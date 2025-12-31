@@ -765,6 +765,8 @@ endif
 	mov	ebp,esp
 	mov	[ebp].RMCS.resvrd,0
 	mov	[ebp].RMCS.rSSSP,0
+	pushf
+	pop	[ebp].RMCS.rFlags
 
 	mov	[ebp].RMCS.rEBP,eax	; stash the size on the stack for now...
 	mov	eax,[xmsentry]
