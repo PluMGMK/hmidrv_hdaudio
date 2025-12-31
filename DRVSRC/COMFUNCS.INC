@@ -201,57 +201,69 @@ printtofile	proc near	uses eax ecx es ds edi
 	ret
 printtofile	endp
 
-; check if HDATSR is installed
-; returns pointer to buffer in EBX, CF set if needed but not present
-check_TSR	proc near
+; check if Virtual DMA Spec is available
+; returns: CF set if needed but not present
+check_VDS	proc near
 if	?DEBUGLOG
-	invoke	printtolog, CStr("Checking if HDATSR is installed...",0Dh,0Ah)
+	invoke	printtolog, CStr("Checking if VDS is available...",0Dh,0Ah)
 endif
-	
+if	?DEBUGAUX
+	int	3
+endif
+
+	; allocate a selector to look at the BDA
+	mov	cx,400h
+	xor	bx,bx
+	mov	di,100h
+	mov	si,bx
+	call	alloc_selector
+
+	; look at 7Bh to see if we have VDS available
+	push	es
+	mov	es,ax
+	movzx	di,byte ptr es:[7Bh]
+	; free the selector
+	mov	ebx,es
+	pop	es
+	call	free_selector
+	xor	ebx,ebx
+
+	; check bit 5 for VDS
+	bt	di,5
+	jnc	@F
+
+	mov	ax,8102h	; get version
+	xor	dx,dx
+	int	4Bh
+	jc	@F
+if	?DEBUGLOG
+	invoke	printtolog, CStr("VDS version: ")
+	invoke	printbinword, ax
+	invoke	printtolog, CStr("b",0Dh,0Ah, "Max buf size: ")
+	invoke	printbinword, si
+	invoke	printbinword, di
+	invoke	printtolog, CStr("b",0Dh,0Ah)
+endif
+	mov	bx,si
+	shl	ebx,10h
+	mov	bx,di
+
+@@:	cmp	ebx,10000h	; CF clear if >=64k
+	jae	@F
+	xor	ebx,ebx		; indicate not available, while clearing CF
 ifdef	?FLASHTEK
-	mov	cl,9Ch
-	mov	ax,2503h	; Phar Lap / FlashTek: get RM interrupt vector
-	int	21h
-	mov	cx,bx
-	test	ebx,ebx
-else
-	mov	ax,200h		; get real mode interrupt vector
-	mov	bl,9Ch
-	int	31h
-	or	cx,dx
+if	?DEBUGLOG
+	invoke	printtolog, CStr("VDS not available, or max buf size <64k",0Dh,0Ah," => need to alloc our own buffers with XMS - checking for DPMI...",0Dh,0Ah)
 endif
+	mov	ax,1686h	; DPMI - detect mode
+	int	2Fh
+	test	ax,ax		; clears carry
 	jz	@F
-	int	9Ch
-@@:
-	.if	cx == 0C0DEh	; if there's no int 9Ch, it'll be 0, not C0DEh
-if	?DEBUGLOG
-	   invoke printtolog, CStr("HDATSR installed, using its arena @ ")
-	   invoke printbinword,bx
-	   invoke printbinword,ax
-	   invoke printtolog, CStr("b",0Dh,0Ah)
+	stc
 endif
-	   shl	ebx,10h
-	   mov	bx,ax
-	   add	ebx,7Fh	; ensure 128-byte alignment
-	   and	bl,80h
-	   clc
-	.else
-	   xor	ebx,ebx	; clears carry - OK since in RATIONAL, we don't need TSR
-ifdef	?FLASHTEK
-if	?DEBUGLOG
-	   invoke printtolog, CStr("HDATSR unavailable, need to allocate our own buffers - checking for DPMI...",0Dh,0Ah)
-endif
-	   mov	ax,1686h	; DPMI - detect mode
-	   int	2Fh
-	   test	ax,ax
-	   clc
-	   jz	@F
-	   stc
-endif
-	.endif
 @@:
 	ret
-check_TSR	endp
+check_VDS	endp
 
 ; check if paging is enabled - CF set if yes, clear if no
 check_paging	proc near
@@ -260,6 +272,7 @@ if	?DEBUGLOG
 endif
 	mov	eax,cs
 	test	eax,3
+	; TODO: check for DOSX w/o VCPI (cf. DOSXBFIX.ASM in VBESVGA.DRV)
 	jnz	@F
 
 if	?DEBUGLOG
@@ -281,9 +294,9 @@ endif
 check_paging	endp
 
 alloc_CORB_RIRB	proc near
-	call	check_TSR
+	call	check_VDS
 	jc	@F
-	mov	[dwTSRbuf],ebx
+	mov	[dwMaxVDSBufSize],ebx
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("Allocating CORB/RIRB buffer...",0Dh,0Ah)
@@ -296,7 +309,7 @@ if	?DEBUGLOG
 endif
 	mov	[dwCorbSelHdl],eax
 	mov	[dwCorbPhys],edx
-	.if	!((eax & 0FFFF0000h) || [dwTSRbuf])
+	.if	!((eax & 0FFFF0000h) || [dwMaxVDSBufSize])
 	   mov	[dwCorbDpmiHdl],ebx
 if	?DEBUGLOG
 	   invoke printtolog, CStr("CORB/RIRB physical address == ")
@@ -601,57 +614,147 @@ get_subnodes	proc near
 get_subnodes	endp
 
 ; Allocate a 128-byte-aligned DMA buffer in Extended Memory
-; Takes size in EAX, returns XMS handle and selector in upper and lower halves of EAX, and physical address in EDX.
-; If the handle in the upper half of EAX is returned as zero, then check EBX instead for a DPMI memory block handle!
+; Takes size in EAX, returns XMS handle / VDS BufID and selector in
+;  upper and lower halves of EAX, and physical address in EDX.
+; If the handle in the upper half of EAX is returned as zero,
+;  then check EBX instead for a DPMI memory block handle!
 alloc_dma_buf	proc near
-	mov	edx,[dwTSRbuf]
+	mov	edx,[dwMaxVDSBufSize]
 	test	edx,edx
 	jz	@@try_xms_dpmi
 
+	push	es
 	push	ecx
 	push	edi
 	push	esi
 	push	ebx
 
-	mov	edi,eax
-	add	eax,7Fh
-	and	al,80h
-	add	edx,[dwTSRbufoffset]
-	add	eax,[dwTSRbufoffset]	; bump allocation with 128-byte align
-	.if	eax > MAXTSRBUFOFFSET
-if	?DEBUGLOG
-	   invoke printtolog, CStr("out of TSR arena memory!",0Dh,0Ah)
-	   ror	eax,10h
-	   invoke printbinword,ax
-	   ror	eax,10h
-	   invoke printbinword,ax
-	   invoke printtolog, CStr("b > ")
-	   mov	ebx,MAXTSRBUFOFFSET
-	   ror	ebx,10h
-	   invoke printbinword,bx
-	   ror	ebx,10h
-	   invoke printbinword,bx
-	   invoke printtolog, CStr("b",0Dh,0Ah)
+	cmp	eax,edx
+	ja	@@vds_toobig
+	mov	esi,eax
+
+	movzx	eax,[ddstrucsel]
+	test	eax,eax
+	jnz	@F
+
+	; alloc a paragraph of memory for the DMA descriptor structure
+	mov	bx,1	; one paragraph
+.errnz	((1 SHL 4) - (size DD_Struc))
+ifdef	?FLASHTEK
+	mov	ah,48h	; allocate DOS memory
+	int	21h
+	jc	@@realallocfail
+
+	mov	es,eax
+	mov	ax,250Fh; PharLap / FlashTek: convert PM address to MS-DOS
+	xor	ebx,ebx	; ES:EBX points to our buffer
+	mov	ecx,size DD_Struc
+	int	21h
+	; ECX should now have a 32-bit seg:off address
+	shr	cx,4	; convert offset (if any) to a segment
+	mov	ax,cx
+	shr	ecx,10h	; get actual segment
+	add	ax,cx	; normalized segment value
+	mov	edx,es
+else
+	mov	ax,100h	; allocate DOS memory
+	int	31h
+	jc	@@realallocfail
 endif
-	   xor	eax,eax
-	   stc
-	.else
-	   mov	[dwTSRbufoffset],eax
+	; now DX is selector, AX is segment
+	mov	[ddstrucsel],dx
+	mov	[ddstrucseg],ax
+	movzx	eax,dx
 
-	   mov	ecx,edx
-	   mov	ebx,edx
-	   shr	ebx,10h			; get physical base into BX:CX
-	   mov	esi,edi
-	   shr	esi,10h			; get desired buffer size into SI:DI
-	   call	alloc_phys_sel
-	   jc	@@dpmiselfail
-	.endif
+@@:	; clear out the DD struct...
+	mov	es,eax
+	xor	eax,eax
+	mov	edi,eax
+	mov	ecx,((size DD_Struc) SHR 2)
+	cld
+	rep	stosd
 
+	; ... and fill in the size
+	mov	es:[DD_Struc.DD_size],esi
+
+	; do the VDS call
+	mov	ax,8107h		; request DMA buffer
+	xor	dx,dx			; flags all zero
+	call	do_vds_call
+	jc	@@vdsfail
+
+	; grab bufid, address and size from VDS buffer
+	mov	ax,es:[DD_Struc.DD_bufid]
+if	?DEBUGLOG
+	invoke	printtolog, CStr("VDS alloc successful, buffer ID = ")
+	invoke	printbinword,ax
+	invoke	printtolog, CStr("b",0Dh,0Ah)
+endif
+	mov	edx,es:[DD_Struc.DD_physaddx]
+	mov	di,word ptr es:DD_Struc.DD_size[0]
+	mov	si,word ptr es:DD_Struc.DD_size[2]
+
+	push	ax			; put bufid on stack
+	mov	ecx,edx
+	mov	ebx,edx
+	shr	ebx,10h			; get physical base into BX:CX
+	call	alloc_phys_sel
+	jc	@@vds_physmapfail
+
+	push	ax
+	pop	eax			; now EAX contains the bufid and the selector
+	clc
+
+@@vds_retpoint:
 	pop	ebx
 	pop	esi
 	pop	edi
 	pop	ecx
+	pop	es
 	ret
+
+@@vds_physmapfail:
+	pushw	0
+	pop	eax
+if	?DEBUGLOG
+	invoke	printtolog, CStr("Physical address mapping failed",0Dh,0Ah)
+	jmp	@@vds_retpoint_fail
+
+@@vds_toobig:
+	invoke	printtolog, CStr("buffer size too large for VDS alloc!",0Dh,0Ah)
+	ror	eax,10h
+	invoke	printbinword,ax
+	ror	eax,10h
+	invoke	printbinword,ax
+	invoke	printtolog, CStr("b > ")
+	ror	edx,10h
+	invoke	printbinword,dx
+	ror	edx,10h
+	invoke	printbinword,dx
+	invoke	printtolog, CStr("b",0Dh,0Ah)
+	jmp	@@vds_retpoint_fail
+
+@@vdsfail:
+	invoke	printtolog, CStr("VDS allocation failed, errcode = ")
+	cbw
+	invoke	printbinword,ax
+	invoke	printtolog, CStr("b",0Dh,0Ah)
+	jmp	@@vds_retpoint_fail
+
+@@realallocfail:
+	invoke	printtolog, CStr("VDS paragraph allocation failed",0Dh,0Ah)
+else
+@@vds_toobig:
+@@vdsfail:
+@@realallocfail:
+endif
+@@vds_retpoint_fail:
+if	?DEBUGAUX
+	int	3
+endif
+	xor	eax,eax
+	stc
+	jmp	@@vds_retpoint
 
 @@try_xms_dpmi:
 	CHECK_XMS_NEEDED
@@ -864,14 +967,39 @@ endif
 alloc_dma_buf	endp
 
 ; Free a 128-byte-aligned DMA buffer in Extended Memory
-; Takes XMS handle and selector in upper and lower halves of EAX, respectively.
+; Takes XMS handle / VDS bufid, and selector, in upper and lower halves of EAX,
+; respectively.
 ; If needed, takes DPMI handle in EBX.
 free_dma_buf	proc near
-	cmp	[dwTSRbuf],0
+	cmp	[dwMaxVDSBufSize],0
 	jz	@@try_xms_dpmi
 
-	mov	bx,ax
-	jmp	free_phys_sel
+	; stash bufid and selector...
+	mov	ebx,eax
+
+	; clear out the DD struct...
+	push	es
+	mov	es,[ddstrucsel]
+	xor	eax,eax
+	mov	edi,eax
+	mov	ecx,((size DD_Struc) SHR 2)
+	cld
+	rep	stosd
+
+	; ... and fill in the bufid
+	mov	eax,ebx
+	shr	eax,10h
+	mov	es:[DD_Struc.DD_bufid],ax
+	pop	es
+
+	; BX already has the selector
+	call	free_phys_sel
+
+	; do the VDS call
+	mov	ax,8108h		; release DMA buffer
+	xor	dx,dx			; flags all zero
+	jmp	do_vds_call
+
 
 @@try_xms_dpmi:
 	CHECK_XMS_NEEDED
@@ -932,6 +1060,77 @@ free_dma_buf	proc near
 	pop	esi
 	ret
 free_dma_buf	endp
+
+; Do an int 4Bh call via Real/VM86 Mode, using the struct at ddstrucseg
+; Takes command in AX and flags in DX, just like int 4Bh itself
+; Returns CF set if error, with error code in AL
+do_vds_call	proc near
+	mov	bx,4Bh
+ifdef	?FLASHTEK
+	push	ebp
+	sub	esp,size RMIS
+	mov	ebp,esp
+
+	; set AX, DX and ES:DI for int 4Bh call
+	mov	[ebp].RMIS.intn,bx
+	mov	[ebp].RMIS.rAX,ax
+	mov	[ebp].RMIS.rDX,dx
+	xor	edi,edi
+	mov	ax,[ddstrucseg]
+	mov	[ebp].RMIS.rES,ax
+
+	push	ds
+	push	ss
+	pop	ds
+	mov	edx,ebp
+	xor	cx,cx
+	mov	ax,2511h		; PharLap: issue real-mode interrupt
+	int	21h
+	pop	ds
+
+	lea	esp,[ebp+size RMIS]
+	pop	ebp
+else
+	push	ebp
+	sub	esp,size RMCS
+	mov	ebp,esp
+	mov	[ebp].RMCS.resvrd,0
+	mov	[ebp].RMCS.rSSSP,0
+	pushf
+	pop	[ebp].RMCS.rFlags
+
+	; set AX, DX and ES:DI for int 4Bh call
+	mov	[ebp].RMCS.rAX,ax
+	mov	[ebp].RMCS.rDX,dx
+	mov	[ebp].RMCS.rDI,0
+	mov	ax,[ddstrucseg]
+	mov	[ebp].RMCS.rES,ax
+
+	push	es
+	push	ss
+	pop	es
+	mov	edi,ebp
+	xor	cx,cx
+	mov	ax,0300h		; simulate real-mode interrupt
+	int	31h
+	pop	es
+
+	mov	dx,[ebp].RMCS.rFlags
+	mov	ax,[ebp].RMCS.rAX	; get error code if any
+	lea	esp,[ebp+size RMCS]
+	pop	ebp
+	jnc	@F
+
+	; put a fake error code to indicate we didn't even call VDS:
+	sbb	al,al			; we know CF=1, so AL becomes 0FFh
+	or	dx,1			; ensure CF stays set
+
+@@:	; get CF state from RMCS buffer
+	push	dx
+	popf
+endif
+	ret
+do_vds_call	endp
 
 ; Take verb in AX and payload in EDX, and return a fully-formed HDA command in EAX
 formulate_cmd	proc near

@@ -72,4 +72,13 @@ RMIS	struc
 RMIS	ends
 endif
 
+; VDS DMA descriptor structure
+DD_Struc struc
+DD_size		dd ?
+DD_offset	dd ?
+DD_segment	dw ?
+DD_bufid	dw ?
+DD_physaddx	dd ?
+DD_Struc ends
+
 DEVSTOENUMERATE	equ 10h

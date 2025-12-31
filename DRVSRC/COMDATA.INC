@@ -64,13 +64,13 @@ hdareg_seg	label	word
 		dd 0
 hdareg_linaddr	dd 0
 
-dwTSRbuf	dd 0
-MAXTSRBUFOFFSET	equ	100000h	; 1 MiB
+dwMaxVDSBufSize	dd 0
 
 dwCorbDpmiHdl	label	dword	; only one of these three dwords will be needed
-dwTSRbufoffset	label	dword
 xmsentry	label	dword
+ddstrucsel	label	word
 xmsentry_ip	dw 0
+ddstrucseg	label	word
 xmsentry_cs	dw 0
 
 lpRirb		label	fword

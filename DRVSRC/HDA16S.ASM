@@ -890,9 +890,6 @@ endif
 	xor	eax,eax
 	mov	[dwCorbPhys],eax
 	mov	[dwCorbSelHdl],eax
-	.if	[dwTSRbuf]
-	   mov	[dwTSRbufoffset],eax	; reset the bump allocator
-	.endif
 if	?DEBUGLOG
 	invoke printtolog, CStr("CORB/RIRB buffer freed",0Dh,0Ah)
 endif
