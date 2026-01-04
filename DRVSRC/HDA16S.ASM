@@ -1186,7 +1186,7 @@ endif
 endif
 
 if	?DEBUGLOG
-	invoke	printtolog, CStr("checking if SMARTDRV is installed...",0Dh,0Ah,"(CD Audio cannot be used with SMARTDRV!)",0Dh,0Ah)
+	invoke	printtolog, CStr("checking if SMARTDRV is installed...",0Dh,0Ah)
 endif
 	push	ebp
 	mov	ax,4A10h	; SMARTDRV v4.00+ installation check
@@ -1194,11 +1194,13 @@ endif
 	mov	cx,0EBABh	; SMARTDRV v4.00+ installation check
 	int	2Fh
 	pop	ebp
-	cmp	ax,0BABEh
-	je	@@skip
-
+	mov	di,ax		; DI = 0BABEh iff SMARTDRV installed
 if	?DEBUGLOG
-	invoke	printtolog, CStr("no SMARTDRV, checking if MSCDEX is available...",0Dh,0Ah)
+	cmp	ax,0BABEh
+	jne	@F
+	invoke	printtolog, CStr("SMARTDRV installed, only non-cached CD drives will be usable.",0Dh,0Ah)
+
+@@:	invoke	printtolog, CStr("checking if MSCDEX is available...",0Dh,0Ah)
 endif
 	mov	ax,1500h	; MSCDEX installation check
 	xor	bx,bx
@@ -1249,6 +1251,7 @@ endif
 	push	gs
 	mov	gs,dx
 
+	mov	bx,di		; save 0BABEh SMARTDRV status
 	mov	dx,cx		; save first drive
 if	?DEBUGLOG
 	invoke	printtolog, CStr("buffer allocated, clearing...",0Dh,0Ah)
@@ -1262,6 +1265,7 @@ if	?DEBUGLOG
 endif
 
 	mov	ax,[wCdRmBufSeg]
+	mov	es:[CdRmHeadBuf.sRmCall.rDX],bx	; save 0BABEh status
 	mov	es:[CdRmHeadBuf.sRmCall.rCX],dx
 	mov	es:[CdRmHeadBuf.sRmCall.rES],ax
 	mov	es:[CdRmHeadBuf.sRmCall.rBX],CdRmHeadBuf.sReq
@@ -1275,7 +1279,26 @@ if	?DEBUGLOG
 	  invoke printdriveletter,byte ptr es:[CdRmHeadBuf.sRmCall.rCX]
 	  invoke printtolog, CStr(": for suitability...",0Dh,0Ah)
 endif
-	  mov	ax,[wCdRmBufSeg]
+
+	  ; first check if SMARTDRV is caching the drive
+	  cmp	es:[CdRmHeadBuf.sRmCall.rDX],0BABEh
+	  jne	@F
+if	?DEBUGLOG
+	  invoke printtolog, CStr("checking if SMARTDRV is caching it...",0Dh,0Ah)
+endif
+	  mov	ax,4A10h	; SMARTDRV v4.00+
+	  mov	bx,3		; STATUS
+	  mov	bp,es:[CdRmHeadBuf.sRmCall.rCX]
+	  xor	dl,dl		; only get information
+	  int	2Fh
+
+	  bt	dx,7		; not cached?
+	  jnc	@@next
+if	?DEBUGLOG
+	  invoke printtolog, CStr("drive not cached! checking caps...",0Dh,0Ah)
+endif
+
+@@:	  mov	ax,[wCdRmBufSeg]
 	  mov	es:[CdRmHeadBuf.sReq.bLen],size IOCTLRW
 	  mov	es:[CdRmHeadBuf.sReq.bCmd],3		; IOCTL read
 	  mov	es:[CdRmHeadBuf.sReq.wBufSeg],ax

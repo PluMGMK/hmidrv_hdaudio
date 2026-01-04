@@ -33,15 +33,16 @@ Essentially, the steps are:
 * If not building yourself, you can grab a zip from the releases page, and extract the `BIN` files and `HMIAPPND.EXE`, but you'll still need to patch your games `HMI*.386` files yourself.
 * Use `HMIAPPND` to patch your game's `HMIDRV.386` and `HMIDET.386` files (syntax for this can be seen in the build scripts).
 * To assist the detector in finding your hardware, it's advisable to set the environment variables `HDA_BUS`, `HDA_DEVICE`, `HDA_FUNCTION`, `HDA_CODEC` and `HDA_WIDGET`. [Japheth's `HDAUtils`](https://github.com/Baron-von-Riedesel/HDAutils) can help you enumerate your hardware and find the appropriate values for these. They should all be specified in hex **without** leading `0x` or anything like that.
-* If you want CD Audio to play through the driver, make sure `SMARTDRV` isn't running on your system.
-  * The driver will not play CD Audio if it detects `SMARTDRV`. If it did, it would lead to buffer underflow and hence unpleasant crackling.
+* If you want CD Audio to play through the driver, make sure `SMARTDRV` isn't set up to cache the CD drive you are using.
+  * The driver will not play CD Audio using any drive cached by `SMARTDRV`. If it did, it would lead to buffer underflow and hence unpleasant crackling.
+  * You can disable CD caching entirely by using the `/U` option when launching `SMARTDRV`.
 * If your game has an installer that detects the sound card which must be run from a CD (i.e. you can't directly modify its copy of `HMIDET.386`), you'll need to run `HMIREDIR` with the path to the directory containing your patched `HMIDET.386`. `HMIREDIR` should be assembled as a `.BIN` file and then renamed to `HMIREDIR.COM` to run it as a TSR.
   * There may be other complications with game installers, like custom file formats containing a list of sound cards (instead of just reading them from SOS itself). The `RAYTOOLS` folder contains source for another program to deal with one such binary format, and an `EXAMPLE.BAT` file showing how to deal with it for one particular *Rayman* game. Other Rayman iterations have text formats, and still others have built-in lists in the installer `EXE` itself.
 
 ## Wishlist (for future versions / projects)
 * Use EMS if available for CD Audio buffers
   * Right now, any game that hogs Conventional Memory can't play CD Audio through this driver at all.
-  * Rayman Junior is an interesting case, in that I've found when `EMM386.EXE` is installed, I can play CD Audio with an 8-sector buffer, but this is simply impossible without an EMM.
+  * Rayman Junior is an egregious case, in that I need to launch it with around 519 kiB of conventional memory in order to play CD Audio with an 8-sector buffer!
 * More tools for Rayman and for other games (possibly less invasive, command-line-based tools)
 * Actually test the Flashtek version
 * 8-bit / mono versions, for games / hardware that need those
