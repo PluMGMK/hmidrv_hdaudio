@@ -231,7 +231,11 @@ drv_capabilities endp
 ; ------------------------------------------------------------------------------ ;
 
 ; Takes file handle in EBX, zero-terminated string in EDX
-printtofile	proc near	uses eax ecx es ds edi
+printtofile	proc near	uses eax ecx es ds
+	cmp	ebx,3
+	je	@@printtoaux
+
+	push	edi
 	xor	ecx,ecx
 	dec	ecx
 	push	cs
@@ -241,11 +245,26 @@ printtofile	proc near	uses eax ecx es ds edi
 	repne	scasb
 	not	ecx		; ECX now has the string length plus one
 	dec	ecx
+	pop	edi
 
 	push	cs
 	pop	ds
 	mov	eax,4000h	; WRITE
 	int	21h
+	ret
+
+@@printtoaux:
+	; bypass int 21h if writing to AUX, to get around re-entrancy concerns
+	push	esi
+	mov	esi,edx
+	xor	edx,edx		; COM1
+@@:	lodsb	cs:[esi]
+	test	al,al
+	jz	@F
+	mov	ah,1		; SERIAL - WRITE CHARACTER TO PORT
+	int	14h
+	jmp	short @B
+@@:	pop	esi
 	ret
 printtofile	endp
 
