@@ -1322,6 +1322,13 @@ endif
 	  mov	es:[CdRmHeadBuf.sReq.wCount],size DevStat
 
 	  mov	es:[CdRmHeadBuf.sRmCall.rAX],1510h	; send device request 
+	  ; Set CF before calling. Since Win9x doesn't change CF when it calls
+	  ; a Protected-Mode CD-ROM driver, this means it will "look like" the
+	  ; call failed in that situation. This is a good thing, because all
+	  ; our CD-ROM handling code is built to work with Real-Mode MSCDEX
+	  ; drivers, and will break badly if we try to mix it with Protected-
+	  ; mode ones!
+	  bts	es:[CdRmHeadBuf.sRmCall.rFlags],0
 	  mov	ax,300h		; simulate real mode interrupt
 	  mov	bx,2Fh
 	  xor	cx,cx
