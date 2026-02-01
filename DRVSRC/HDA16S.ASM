@@ -158,6 +158,20 @@ QInfo		struc
 	bPFrame	db ?
 QInfo		ends
 
+DiskInfo	struc
+	bCode	db ?		; 10 for read
+	bLTrack	db ?
+	bHTrack	db ?
+	dwLOut	dd ?
+DiskInfo	ends
+
+TrackInfo	struc
+	bCode	db ?		; 11 for read
+	bTrack	db ?
+	dwStart	dd ?
+	bCtlADR	db ?
+TrackInfo	ends
+
 ; layout of our first conventional-memory buffer for querying CD drives
 CdRmHeadBuf	struc
 	wFirstS	dw ?		; selector of first buffer in linked list
@@ -174,7 +188,9 @@ CdRmDriveBuf	struc
 	sReq	ReadL<?>
 	sInfo	AudInfo<?>
 	sStat	AudStat<?>
-	sQChan	QInfo<?>
+	sDisc	DiskInfo<?>
+	sCurTr	TrackInfo<?>
+	sNextTr	TrackInfo<?>
 	wStatus	dw ?		; set bit 9 to indicate we're playing
 				; also bit 0 to indicate prefetch possible...
 	dwBufPos dd ?
@@ -1383,7 +1399,9 @@ endif
 	  mov	gs:[CdRmDriveBuf.sReq.bRMode],1		; raw
 
 	  mov	gs:[CdRmDriveBuf.sInfo.bCode],4		; audio channel info
-	  mov	gs:[CdRmDriveBuf.sQChan.bCode],0Ch	; audio Q-Channel info
+	  mov	gs:[CdRmDriveBuf.sDisc.bCode],0Ah	; audio disc info
+	  mov	gs:[CdRmDriveBuf.sCurTr.bCode],0Bh	; audio track info
+	  mov	gs:[CdRmDriveBuf.sNextTr.bCode],0Bh	; audio track info
 	  mov	gs:[CdRmDriveBuf.sStat.bCode],0Fh	; audio status info
 
 	  ;mov	es:[CdRmHeadBuf.sReq.bLen],size IOCTLRW
@@ -1403,7 +1421,7 @@ if	?DEBUGLOG
 endif
 
 	  ; TODO: Seamlessly take over any ongoing audio playback?
-	  ; (Would need to fill sStat and sQChan, and set wStatus and dwBufPos)
+	  ; (Would need to fill sStat, and set wStatus and dwBufPos)
 	  mov	es:[CdRmHeadBuf.sReq.bLen],0Dh
 	  mov	es:[CdRmHeadBuf.sReq.bCmd],133		; STOP AUDIO
 	  mov	es:[CdRmHeadBuf.sRmCall.rAX],1510h	; send device request 
@@ -2352,47 +2370,120 @@ if	?DEBUGLOG
 	jnc	@F
 	invoke	logtostderr
 	invoke	printbinword,gs:[CdRmDriveBuf.sReq.wStatus]
+if	?DEBUGAUX
 	int	3
+endif
 	invoke	closelog
 
 @@:
 endif
 	imul	eax,ecx,CDSECTORSIZE
 	add	eax,CdRmDriveBuf.Samples
-	mov	gs:[CdRmDriveBuf.dwBufEnd],eax
 	add	gs:[CdRmDriveBuf.sReq.dwStart],ecx
+	xchg	gs:[CdRmDriveBuf.dwBufEnd],eax
 
 	; check if driver advertised prefetch support
 	; if not, there is no point in doing READ LONG PREFETCH, as it will just
 	; seek, to a location which has already been reached by the above read.
+	xor	cx,cx
 	bt	gs:[CdRmDriveBuf.wStatus],0
 	jnc	@F
 
 	; encourage MSCDEX to prefetch the next N sectors so as not to block
+	push	eax
 	mov	gs:[CdRmDriveBuf.sReq.bCmd],82h	; READ LONG PREFETCH
 	mov	ax,0302h		; call real-mode interrupt procedure
-	mov	cx,bx
+	mov	bh,cl			; zero the flags for int 31h
 	int	31h
+	pop	eax
 
-@@:
-	; update Q-Channel info
-	mov	ax,gs:[CdRmDriveBuf.sReq.wBufSeg]
-	mov	cx,[wCdRmBufSeg]
-
-	push	fs
+@@:	push	fs
+	mov	ebx,eax
 	mov	fs,[wCdRmBufSel]
 	mov	fs:[CdRmHeadBuf.sReq.bCmd],3	; IOCTL Read
-	mov	fs:[CdRmHeadBuf.sReq.wCount],size QInfo
-	mov	fs:[CdRmHeadBuf.sReq.wBufOff],CdRmDriveBuf.sQChan
+	mov	ax,gs:[CdRmDriveBuf.sReq.wBufSeg]
 	mov	fs:[CdRmHeadBuf.sReq.wBufSeg],ax
-	pop	fs
 
-	mov	[ebp].RMCS.rES,cx
+	; set parameters for int 31h calls below
+	mov	ax,[wCdRmBufSeg]
+	mov	[ebp].RMCS.rES,ax
 	mov	[ebp].RMCS.rBX,CdRmHeadBuf.sReq
 	mov	ax,0302h		; call real-mode interrupt procedure
-	mov	cx,bx
+
+	; EBX (previous dwBufEnd) is zero iff we've just started playing
+	test	ebx,ebx
+	jnz	@@continue_playing
+
+	; if we've just started playing, figure out what track we're on
+	mov	fs:[CdRmHeadBuf.sReq.wCount],size DiskInfo
+	mov	fs:[CdRmHeadBuf.sReq.wBufOff],CdRmDriveBuf.sDisc
 	int	31h
 
+	; loop through tracks until we find one beyond the current sector
+	; FIXME: this loop works, but it incurs an *unacceptable* performance
+	; penalty at the beginning of any playback. Replace with a TOC cache.
+	mov	fs:[CdRmHeadBuf.sReq.wCount],size TrackInfo
+	mov	fs:[CdRmHeadBuf.sReq.wBufOff],CdRmDriveBuf.sNextTr
+	mov	bl,gs:[CdRmDriveBuf.sDisc.bLTrack]
+@@:	mov	gs:[CdRmDriveBuf.sNextTr.bTrack],bl
+	mov	ax,0302h		; call real-mode interrupt procedure
+	int	31h
+	; does this track start after our current position?
+	mov	eax,gs:[CdRmDriveBuf.sNextTr.dwStart]
+	; put it in HSG format for ease of comparison...
+	call	redbook2hsg
+	mov	gs:[CdRmDriveBuf.sNextTr.dwStart],eax
+	cmp	eax,gs:[CdRmDriveBuf.sReq.dwStart]
+	ja	@F
+	; nope, so copy the data into the "current track" field and try the
+	; next one...
+	mov	gs:[CdRmDriveBuf.sCurTr.dwStart],eax
+	mov	gs:[CdRmDriveBuf.sCurTr.bTrack],bl
+	mov	al,gs:[CdRmDriveBuf.sNextTr.bCtlADR]
+	mov	gs:[CdRmDriveBuf.sCurTr.bCtlADR],al
+	; next track - does it exist?
+	inc	bl
+	cmp	bl,gs:[CdRmDriveBuf.sDisc.bHTrack]
+	; if so, go check it!
+	jna	@B
+
+@@:	; at this point, the "current" and "next" track structures should be
+	; populated properly (if it happens to be the last track, they are
+	; the same!)
+	jmp	@@tracknos_correct
+
+@@continue_playing:
+	; zero the flags for int 31h
+	mov	bh,cl
+
+	; see if we've moved into the next track
+	; (first check if there is a "next track"!)
+	mov	bl,gs:[CdRmDriveBuf.sCurTr.bTrack]
+	cmp	bl,gs:[CdRmDriveBuf.sDisc.bHTrack]
+	jnb	@@tracknos_correct
+
+	mov	eax,gs:[CdRmDriveBuf.sNextTr.dwStart]
+	cmp	eax,gs:[CdRmDriveBuf.sReq.dwStart]
+	ja	@@tracknos_correct
+
+	; copy "next track" data into "current track" structure
+	mov	gs:[CdRmDriveBuf.sCurTr.dwStart],eax
+	inc	gs:[CdRmDriveBuf.sCurTr.bTrack]
+	mov	al,gs:[CdRmDriveBuf.sNextTr.bCtlADR]
+	mov	gs:[CdRmDriveBuf.sCurTr.bCtlADR],al
+
+	; and repopulate the "next track" structure
+	mov	fs:[CdRmHeadBuf.sReq.wCount],size TrackInfo
+	mov	fs:[CdRmHeadBuf.sReq.wBufOff],CdRmDriveBuf.sNextTr
+	inc	gs:[CdRmDriveBuf.sNextTr.bTrack]
+	mov	ax,0302h		; call real-mode interrupt procedure
+	int	31h
+	mov	eax,gs:[CdRmDriveBuf.sNextTr.dwStart]
+	; put it in HSG format for ease of comparison...
+	call	redbook2hsg
+	mov	gs:[CdRmDriveBuf.sNextTr.dwStart],eax
+@@tracknos_correct:
+	pop	fs
 @@done:
 	; when the system is not in VM86 mode, the CD driver may carelessly
 	; mask IRQ0, effectively disabling our driver - counteract this here!
@@ -2452,7 +2543,7 @@ mixincdaudio	proc near	uses gs esi ebx eax edx
 
 if	?CDCHANCTL
 	mov	edx,2	; step size in words
-	.if	gs:[CdRmDriveBuf.sQChan.bCtlAdr] & 80h ; four channels?
+	.if	gs:[CdRmDriveBuf.sCurTr.bCtlADR] & 80h ; four channels?
 	   mov	dl,4
 	.endif
 	; pull in the input for right channel
@@ -2932,6 +3023,24 @@ redbook2hsg	proc near	uses edx ecx
 	lea	eax,[ecx+edx-150]
 	ret
 redbook2hsg	endp
+; Takes HSG sector in EAX and returns RedBook M:S:F address in EAX
+hsg2redbook:
+	; for an absolute address
+	add	eax,150
+sectors2msf	proc near	uses edx ecx ebx
+	; for a delta
+	cdq
+	mov	ecx,75
+	idiv	ecx	; EAX = seconds + minutes*60, EDX = frames
+	mov	ebx,edx	; save frames
+	cdq
+	mov	ecx,60
+	idiv	ecx	; EAX = minutes, EDX = seconds
+	shl	eax,10h
+	mov	ah,dl
+	mov	al,bl
+	ret
+sectors2msf	endp
 
 int2f_handler	proc
 	; Remember: on entry, ES is set to our head buffer, and EDI points to
@@ -2990,6 +3099,66 @@ int2f_handler	proc
 	    mov	fs:[ebx.AudStat.dwEnd],edx
 
 	    pop	ebx				; FS:EBX = device request
+	    mov	fs:[ebx.IOCTLRW.wStatus],100h	; done
+	    or	fs:[ebx.IOCTLRW.wStatus],bp	; busy?
+	    jmp	@@return
+
+	  .elseif byte ptr fs:[ebx] == 0Ch	; Q-Channel Info
+	    ; The reported Q-Channel info should correspond "roughly" to the
+	    ; audio that the user is currently hearing. A bit of latency is OK:
+	    ; even a physical drive playing on its own analogue output will
+	    ; buffer it to some extent, causing the reported head position to
+	    ; be eight sectors or so beyond what the user is hearing.
+	    ; 
+	    ; Unfortunately, when the drive isn't directly responsible for
+	    ; playback, even though we're asking it to fetch sectors in
+	    ; sequence, the reported head position can be a bit random, and
+	    ; usually several seconds ahead of what the user is hearing!
+	    ; 
+	    ; To counter this, we will instead report the last place we fetched
+	    ; audio from, which also involves knowing the current track info.
+
+	    mov	ecx,ebx				; FS:ECX = read request
+	    pop	ebx				; FS:EBX = device request
+	    bt	bp,9
+	    ; if not playing audio, just report the real Q-Channel
+	    jnc	@@passthrough
+
+	    ; report current track info
+	    mov	al,gs:[CdRmDriveBuf.sCurTr.bTrack]
+	    mov	ah,gs:[CdRmDriveBuf.sCurTr.bCtlADR]
+	    mov	fs:[ecx.QInfo.bCtlADR],ah
+	    ; track# needs to be converted back to BCD...
+	    cbw
+	    mov	dl,10
+	    div	dl
+	    shl	al,4
+	    or	al,ah
+	    mov	fs:[ecx.QInfo.bTrack],al
+	    ; Point?? Who cares...
+	    mov	fs:[ecx.QInfo.bPoint],1
+
+	    ; absolute "head position" in Redbook format
+	    mov	edx,gs:[CdRmDriveBuf.sReq.dwStart]
+	    ; convert to M:S:F
+	    mov	eax,edx
+	    call hsg2redbook
+	    mov	fs:[ecx.QInfo.bPFrame],al
+	    mov	fs:[ecx.QInfo.bPSec],ah
+	    shr	eax,10h
+	    mov	fs:[ecx.QInfo.bPMin],al
+
+	    ; relative "head position" in Redbook format
+	    sub	edx,gs:[CdRmDriveBuf.sCurTr.dwStart]
+	    ; convert to M:S:F
+	    mov	eax,edx
+	    call sectors2msf
+	    mov	fs:[ecx.QInfo.bFrame],al
+	    mov	fs:[ecx.QInfo.bSecond],ah
+	    shr	eax,10h
+	    mov	fs:[ecx.QInfo.bMinute],al
+	    mov	fs:[ecx.QInfo._resd],ah
+
 	    mov	fs:[ebx.IOCTLRW.wStatus],100h	; done
 	    or	fs:[ebx.IOCTLRW.wStatus],bp	; busy?
 	    jmp	@@return
