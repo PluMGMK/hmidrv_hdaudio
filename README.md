@@ -30,7 +30,7 @@ Essentially, the steps are:
   * Assemble the driver, `drvsrc/hda16s.asm` (with the `-D?FLASHTEK` option if targeting that DOS extender), as a binary (`.BIN`) file, using [JWASM](https://www.japheth.de/JWasm.html) or similar.
   * Likewise assemble the detector, `drvsrc/HDA16SD.ASM`.
   * You can also build `HMIAPPND` if you have a C compiler handy (example build scripts are `BOOTSTRP.BAT` for DOS, using Open Watcom, and `BOOTSTRP.SH` for Linux, using GCC), but this isn't necessary as a DOS EXE of this patcher is included in the source repo.
-* If not building yourself, you can grab a zip from the releases page, and extract the `BIN` files and `HMIAPPND.EXE`, but you'll still need to patch your games `HMI*.386` files yourself.
+* If not building yourself, you can grab a zip from the releases page, and extract the `BIN` files and `HMIAPPND.EXE`, but you'll still need to patch your game's `HMI*.386` files yourself.
 * Use `HMIAPPND` to patch your game's `HMIDRV.386` and `HMIDET.386` files (syntax for this can be seen in the build scripts).
 * To assist the detector in finding your hardware, it's advisable to set the environment variables `HDA_BUS`, `HDA_DEVICE`, `HDA_FUNCTION`, `HDA_CODEC` and `HDA_WIDGET`. [Japheth's `HDAUtils`](https://github.com/Baron-von-Riedesel/HDAutils) can help you enumerate your hardware and find the appropriate values for these. They should all be specified in hex **without** leading `0x` or anything like that.
 * If you want CD Audio to play through the driver, make sure `SMARTDRV` isn't set up to cache the CD drive you are using.
