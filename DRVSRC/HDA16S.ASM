@@ -158,13 +158,6 @@ QInfo		struc
 	bPFrame	db ?
 QInfo		ends
 
-DiskInfo	struc
-	bCode	db ?		; 10 for read
-	bLTrack	db ?
-	bHTrack	db ?
-	dwLOut	dd ?
-DiskInfo	ends
-
 TrackInfo	struc
 	bCode	db ?		; 11 for read
 	bTrack	db ?
@@ -188,7 +181,7 @@ CdRmDriveBuf	struc
 	sReq	ReadL<?>
 	sInfo	AudInfo<?>
 	sStat	AudStat<?>
-	sDisc	DiskInfo<?>
+	sQChan	QInfo<?>
 	sCurTr	TrackInfo<?>
 	sNextTr	TrackInfo<?>
 	wStatus	dw ?		; set bit 9 to indicate we're playing
@@ -1406,9 +1399,9 @@ endif
 	  mov	gs:[CdRmDriveBuf.sReq.bRMode],1		; raw
 
 	  mov	gs:[CdRmDriveBuf.sInfo.bCode],4		; audio channel info
-	  mov	gs:[CdRmDriveBuf.sDisc.bCode],0Ah	; audio disc info
 	  mov	gs:[CdRmDriveBuf.sCurTr.bCode],0Bh	; audio track info
 	  mov	gs:[CdRmDriveBuf.sNextTr.bCode],0Bh	; audio track info
+	  mov	gs:[CdRmDriveBuf.sQChan.bCode],0Ch	; audio Q-Channel info
 	  mov	gs:[CdRmDriveBuf.sStat.bCode],0Fh	; audio status info
 
 	  ;mov	es:[CdRmHeadBuf.sReq.bLen],size IOCTLRW
@@ -2421,54 +2414,68 @@ endif
 	test	ebx,ebx
 	jnz	@@continue_playing
 
-	; if we've just started playing, figure out what track we're on
-	mov	fs:[CdRmHeadBuf.sReq.wCount],size DiskInfo
-	mov	fs:[CdRmHeadBuf.sReq.wBufOff],CdRmDriveBuf.sDisc
+	; if we've just started playing, figure out what track we're on:
+	; the reported head position of the Q-Channel should be "close enough"
+	; to tell us that, if nothing else!
+	mov	fs:[CdRmHeadBuf.sReq.wCount],size QInfo
+	mov	fs:[CdRmHeadBuf.sReq.wBufOff],CdRmDriveBuf.sQChan
 	int	31h
+	; track number's in BCD, ugh...
+	mov	al,gs:[CdRmDriveBuf.sQChan.bTrack]
+if	?DEBUGLOG AND ?DEBUGAUX
+	push	ds
+	mov	ds,cs:[lpPortList_seg]		; needed for printhexword
+	xor	ah,ah
+	invoke	printtolog,CStr("Q-Channel after we start playing indicates track# ")
+	invoke	printhexword,ax
+	invoke	printtolog,CStr(0Dh,0Ah)
+endif
+	mov	ah,al
+	and	al,0Fh
+	shr	ah,4
+	mov	bl,ah
+	shl	bl,2	; BL = AH * 4
+	add	bl,ah	; BL = AH * 5
+	shl	bl,1	; BL = AH * 10
+	add	bl,al	; BL = AH * 10 + AL == our track number in binary
 
-	; loop through tracks until we find one beyond the current sector
-	; FIXME: this loop works, but it incurs an *unacceptable* performance
-	; penalty at the beginning of any playback. Replace with a TOC cache.
+	; get the info for the current track
 	mov	fs:[CdRmHeadBuf.sReq.wCount],size TrackInfo
-	mov	fs:[CdRmHeadBuf.sReq.wBufOff],CdRmDriveBuf.sNextTr
-	mov	bl,gs:[CdRmDriveBuf.sDisc.bLTrack]
-@@:	mov	gs:[CdRmDriveBuf.sNextTr.bTrack],bl
+	mov	fs:[CdRmHeadBuf.sReq.wBufOff],CdRmDriveBuf.sCurTr
+	mov	gs:[CdRmDriveBuf.sCurTr.bTrack],bl
 	mov	ax,0302h		; call real-mode interrupt procedure
 	int	31h
-	; does this track start after our current position?
-	mov	eax,gs:[CdRmDriveBuf.sNextTr.dwStart]
-	; put it in HSG format for ease of comparison...
+	mov	eax,gs:[CdRmDriveBuf.sCurTr.dwStart]
+if	?DEBUGLOG AND ?DEBUGAUX
+	invoke	printtolog,CStr("Reported M:S:F start for this track is ")
+	ror	eax,10h
+	invoke	printhexword,ax
+	ror	eax,10h
+	invoke	printhexword,ax
+	invoke	printtolog,CStr("h",0Dh,0Ah)
+endif
+	; put it in HSG format for ease of arithmetic...
 	call	redbook2hsg
-	mov	gs:[CdRmDriveBuf.sNextTr.dwStart],eax
-	cmp	eax,gs:[CdRmDriveBuf.sReq.dwStart]
-	ja	@F
-	; nope, so copy the data into the "current track" field and try the
-	; next one...
+if	?DEBUGLOG AND ?DEBUGAUX
+	invoke	printtolog,CStr("Which is ")
+	ror	eax,10h
+	invoke	printhexword,ax
+	ror	eax,10h
+	invoke	printhexword,ax
+	invoke	printtolog,CStr("h in HSG",0Dh,0Ah)
+	pop	ds
+endif
 	mov	gs:[CdRmDriveBuf.sCurTr.dwStart],eax
-	mov	gs:[CdRmDriveBuf.sCurTr.bTrack],bl
-	mov	al,gs:[CdRmDriveBuf.sNextTr.bCtlADR]
-	mov	gs:[CdRmDriveBuf.sCurTr.bCtlADR],al
-	; next track - does it exist?
-	inc	bl
-	cmp	bl,gs:[CdRmDriveBuf.sDisc.bHTrack]
-	; if so, go check it!
-	jna	@B
 
-@@:	; at this point, the "current" and "next" track structures should be
-	; populated properly (if it happens to be the last track, they are
-	; the same!)
-	jmp	@@tracknos_correct
+	; go get the info for the next track (this will be INCed in a moment)
+	mov	gs:[CdRmDriveBuf.sNextTr.bTrack],bl
+	jmp	@@query_next_track
 
 @@continue_playing:
 	; zero the flags for int 31h
 	mov	bh,cl
 
 	; see if we've moved into the next track
-	; (first check if there is a "next track"!)
-	mov	bl,gs:[CdRmDriveBuf.sCurTr.bTrack]
-	cmp	bl,gs:[CdRmDriveBuf.sDisc.bHTrack]
-	jnb	@@tracknos_correct
-
 	mov	eax,gs:[CdRmDriveBuf.sNextTr.dwStart]
 	cmp	eax,gs:[CdRmDriveBuf.sReq.dwStart]
 	ja	@@tracknos_correct
@@ -2479,13 +2486,19 @@ endif
 	mov	al,gs:[CdRmDriveBuf.sNextTr.bCtlADR]
 	mov	gs:[CdRmDriveBuf.sCurTr.bCtlADR],al
 
+@@query_next_track:
 	; and repopulate the "next track" structure
 	mov	fs:[CdRmHeadBuf.sReq.wCount],size TrackInfo
 	mov	fs:[CdRmHeadBuf.sReq.wBufOff],CdRmDriveBuf.sNextTr
 	inc	gs:[CdRmDriveBuf.sNextTr.bTrack]
+	; put in a dummy value in case the "next track" doesn't exist
+	mov	gs:[CdRmDriveBuf.sNextTr.dwStart],-1
 	mov	ax,0302h		; call real-mode interrupt procedure
 	int	31h
 	mov	eax,gs:[CdRmDriveBuf.sNextTr.dwStart]
+	cmp	eax,-1
+	; don't try to convert the dummy value!
+	je	@@tracknos_correct
 	; put it in HSG format for ease of comparison...
 	call	redbook2hsg
 	mov	gs:[CdRmDriveBuf.sNextTr.dwStart],eax
@@ -3142,6 +3155,15 @@ int2f_handler	proc
 	    shl	al,4
 	    or	al,ah
 	    mov	fs:[ecx.QInfo.bTrack],al
+if	?DEBUGLOG AND ?DEBUGAUX
+	    push ds
+	    mov	ds,cs:[lpPortList_seg]		; needed for printhexword
+	    xor	ah,ah
+	    invoke printtolog,CStr("Reporting track# ")
+	    invoke printhexword,ax
+	    invoke printtolog,CStr(0Dh,0Ah)
+	    pop	ds
+endif
 	    ; Point?? Who cares...
 	    mov	fs:[ecx.QInfo.bPoint],1
 
