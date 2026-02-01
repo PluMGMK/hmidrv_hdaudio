@@ -268,31 +268,31 @@ endif
 announcecopy	proc near
 	invoke	printtolog, CStr("copying ")
 	ror	edx,10h
-	invoke	printbinword,dx
+	invoke	printhexword,dx
 	ror	edx,10h
-	invoke	printbinword,dx
+	invoke	printhexword,dx
 
-	invoke	printtolog, CStr("b dwords;",0Dh,0Ah,"    from: ")
+	invoke	printtolog, CStr("h dwords;",0Dh,0Ah,"    from: ")
 	ror	esi,10h
-	invoke	printbinword,si
+	invoke	printhexword,si
 	ror	esi,10h
-	invoke	printbinword,si
+	invoke	printhexword,si
 
-	invoke	printtolog, CStr("b (main buffer)",0Dh,0Ah,"      to: ")
+	invoke	printtolog, CStr("h (main buffer)",0Dh,0Ah,"      to: ")
 	ror	edi,10h
-	invoke	printbinword,di
+	invoke	printhexword,di
 	ror	edi,10h
-	invoke	printbinword,di
-	invoke	printtolog, CStr("b (aux buffer);",0Dh,0Ah,"   limit: ")
+	invoke	printhexword,di
+	invoke	printtolog, CStr("h (aux buffer);",0Dh,0Ah,"   limit: ")
 
 	push	edi
 	mov	edi,es
 	lsl	edi,edi
 	ror	edi,10h
-	invoke	printbinword,di
+	invoke	printhexword,di
 	ror	edi,10h
-	invoke	printbinword,di
-	invoke	printtolog, CStr("b (aux buffer)",0Dh,0Ah)
+	invoke	printhexword,di
+	invoke	printtolog, CStr("h (aux buffer)",0Dh,0Ah)
 	pop	edi
 
 	ret
@@ -456,8 +456,8 @@ endif
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("BUGBUG: codec/node ")
-	invoke	printbinword,[wParam]
-	invoke	printtolog, CStr("b is not a DAC (it is a ")
+	invoke	printhexword,[wParam]
+	invoke	printtolog, CStr("h is not a DAC (it is a ")
 	invoke	printnodetype,al
 	invoke	printtolog, CStr(")",0Dh,0Ah)
 endif
@@ -466,8 +466,8 @@ endif
 @@:
 if	?DEBUGLOG
 	invoke	printtolog, CStr("DAC found at codec/node ")
-	invoke	printbinword,[wParam]
-	invoke	printtolog, CStr("b, unmuting...",0Dh,0Ah)
+	invoke	printhexword,[wParam]
+	invoke	printtolog, CStr("h, unmuting...",0Dh,0Ah)
 endif
 	xor	eax,eax		; only the output amplifier
 	call	unmute
@@ -542,11 +542,11 @@ if	?SETIRQLINE
 if	?DEBUGLOG
 	invoke	printtolog, CStr("PCI IRQ line set to ")
 	movzx	bx,[irq]
-	invoke	printbinword,bx
-	invoke	printtolog, CStr("b (was ")
+	invoke	printhexword,bx
+	invoke	printtolog, CStr("h (was ")
 	movzx	bx,[oldpciirq]
-	invoke	printbinword,bx
-	invoke	printtolog, CStr("b)",0Dh,0Ah)
+	invoke	printhexword,bx
+	invoke	printtolog, CStr("h)",0Dh,0Ah)
 
 	invoke	printtolog, CStr("Readback: PCI IRQ line is ")
 	mov	ax,0B108h	; read configuration byte
@@ -554,8 +554,8 @@ if	?DEBUGLOG
 	mov	edi,3Ch		; interrupt line
 	int	1Ah
 	xor	ch,ch
-	invoke	printbinword,cx
-	invoke	printtolog, CStr("b",0Dh,0Ah)
+	invoke	printhexword,cx
+	invoke	printtolog, CStr("h",0Dh,0Ah)
 endif
 
 else
@@ -565,8 +565,8 @@ else
 if	?DEBUGLOG
 	invoke	printtolog, CStr("set our IRQ to ")
 	xor	ch,ch
-	invoke	printbinword,cx
-	invoke	printtolog, CStr("b, in accordance with PCI config space",0Dh,0Ah)
+	invoke	printhexword,cx
+	invoke	printtolog, CStr("h, in accordance with PCI config space",0Dh,0Ah)
 endif
 
 endif
@@ -614,8 +614,8 @@ endif
 if	?DEBUGLOG
 	invoke	printtolog, CStr("protected-mode IRQ handler set (vector ")
 	movzx	ax,[irqvec]
-	invoke	printbinword,ax
-	invoke	printtolog, CStr("b)",0Dh,0Ah)
+	invoke	printhexword,ax
+	invoke	printtolog, CStr("h)",0Dh,0Ah)
 endif
 
 	xor	eax,eax		; zero wakeen - we don't want interrupts for this...
@@ -706,42 +706,42 @@ endif
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("IRQ stats: ")
-	invoke	printbinword,word ptr [TotalIRQs+2]
-	invoke	printbinword,word ptr [TotalIRQs]
-	invoke	printtolog, CStr("b total caught IRQs;",0Dh,0Ah,"Of which ")
-	invoke	printbinword,word ptr [PassedIRQs+2]
-	invoke	printbinword,word ptr [PassedIRQs]
-	invoke	printtolog, CStr("b were passed through;",0Dh,0Ah,"Of which ")
-	invoke	printbinword,word ptr [TotalBCISs+2]
-	invoke	printbinword,word ptr [TotalBCISs]
-	invoke	printtolog, CStr("b were BCIS;",0Dh,0Ah)
-	invoke	printbinword,word ptr [UncaughtIRQs+2]
-	invoke	printbinword,word ptr [UncaughtIRQs]
-	invoke	printtolog, CStr("b UNCAUGHT (timer-detected) IRQs;",0Dh,0Ah)
-	invoke	printbinword,word ptr [UncaughtPCI+2]
-	invoke	printbinword,word ptr [UncaughtPCI]
-	invoke	printtolog, CStr("b of these asserted PCI interrupt status",0Dh,0Ah,"Average ticks per BCIS: ")
+	invoke	printhexword,word ptr [TotalIRQs+2]
+	invoke	printhexword,word ptr [TotalIRQs]
+	invoke	printtolog, CStr("h total caught IRQs;",0Dh,0Ah,"Of which ")
+	invoke	printhexword,word ptr [PassedIRQs+2]
+	invoke	printhexword,word ptr [PassedIRQs]
+	invoke	printtolog, CStr("h were passed through;",0Dh,0Ah,"Of which ")
+	invoke	printhexword,word ptr [TotalBCISs+2]
+	invoke	printhexword,word ptr [TotalBCISs]
+	invoke	printtolog, CStr("h were BCIS;",0Dh,0Ah)
+	invoke	printhexword,word ptr [UncaughtIRQs+2]
+	invoke	printhexword,word ptr [UncaughtIRQs]
+	invoke	printtolog, CStr("h UNCAUGHT (timer-detected) IRQs;",0Dh,0Ah)
+	invoke	printhexword,word ptr [UncaughtPCI+2]
+	invoke	printhexword,word ptr [UncaughtPCI]
+	invoke	printtolog, CStr("h of these asserted PCI interrupt status",0Dh,0Ah,"Average ticks per BCIS: ")
 	mov	eax,dword ptr [TotalTicks]
 	mov	edx,dword ptr [TotalTicks+4]
 	mov	ebx,[TotalBCISs]
 	.if	ebx <= edx	; the last thing we need here is a #DE!
 	   invoke printtolog, CStr("Could not be calculated (total ticks:",0Dh,0Ah)
 	   ror	edx,10h
-	   invoke printbinword,dx
+	   invoke printhexword,dx
 	   ror	edx,10h
-	   invoke printbinword,dx
+	   invoke printhexword,dx
 	   ror	eax,10h
-	   invoke printbinword,ax
+	   invoke printhexword,ax
 	   ror	eax,10h
-	   invoke printbinword,ax
-	   invoke printtolog, CStr("b)",0Dh,0Ah)
+	   invoke printhexword,ax
+	   invoke printtolog, CStr("h)",0Dh,0Ah)
 	.else
 	   div	ebx
 	   ror	eax,10h
-	   invoke printbinword,ax
+	   invoke printhexword,ax
 	   ror	eax,10h
-	   invoke printbinword,ax
-	   invoke printtolog, CStr("b",0Dh,0Ah)
+	   invoke printhexword,ax
+	   invoke printtolog, CStr("h",0Dh,0Ah)
 	.endif
 
 	invoke	printtolog, CStr("checking if HDA register far pointer exists...",0Dh,0Ah)
@@ -915,8 +915,8 @@ endif
 if	?DEBUGLOG
 	invoke	printtolog, CStr("finding rate index...",0Dh,0Ah)
 	invoke	printtolog, CStr("requested rate: ")
-	invoke	printbinword,bx
-	invoke	printtolog, CStr("b",0Dh,0Ah)
+	invoke	printhexword,bx
+	invoke	printtolog, CStr("h",0Dh,0Ah)
 endif
 	mov	ax,bx
 	.if	ax == 10000	; Rayman 1 uses this non-standard rate...
@@ -931,8 +931,8 @@ if	?DEBUGLOG
 	invoke	printtolog, CStr("[rate support bitmap: ")
 	invoke	printbinword,[ratebitmap]
 	invoke	printtolog, CStr("; rate index: ")
-	invoke	printbinword,ax
-	invoke	printtolog, CStr("b]",0Dh,0Ah)
+	invoke	printhexword,ax
+	invoke	printtolog, CStr("h]",0Dh,0Ah)
 endif
 	bt	[ratebitmap],ax
 	movzx	ebx,ax
@@ -966,8 +966,8 @@ endif
 	mov	[node],al
 if	?DEBUGLOG
 	invoke	printtolog, CStr("DAC found at codec/node ")
-	invoke	printbinword,[wParam]
-	invoke	printtolog, CStr("b, unmuting...",0Dh,0Ah)
+	invoke	printhexword,[wParam]
+	invoke	printtolog, CStr("h, unmuting...",0Dh,0Ah)
 endif
 	xor	eax,eax		; only the output amplifier
 	call	unmute
@@ -1075,11 +1075,11 @@ endif
 if	?DEBUGLOG
 	invoke	printtolog, CStr("software divider in operation (")
 	movzx	ax,[soft_divider]
-	invoke	printbinword,ax
-	invoke	printtolog, CStr("b), creating new buffer...",0Dh,0Ah,"[")
-	invoke	printbinword,word ptr [dwMainBufSize+2]
-	invoke	printbinword,word ptr [dwMainBufSize]
-	invoke	printtolog, CStr("b --> ")
+	invoke	printhexword,ax
+	invoke	printtolog, CStr("h), creating new buffer...",0Dh,0Ah,"[")
+	invoke	printhexword,word ptr [dwMainBufSize+2]
+	invoke	printhexword,word ptr [dwMainBufSize]
+	invoke	printtolog, CStr("h --> ")
 endif
 	mov	eax,ecx
 	movzx	ecx,[soft_divider]
@@ -1087,10 +1087,10 @@ endif
 	mov	ecx,eax
 if	?DEBUGLOG
 	ror	ecx,10h
-	invoke	printbinword,cx
+	invoke	printhexword,cx
 	ror	ecx,10h
-	invoke	printbinword,cx
-	invoke	printtolog, CStr("b]",0Dh,0Ah)
+	invoke	printhexword,cx
+	invoke	printtolog, CStr("h]",0Dh,0Ah)
 endif
 	jmp	@@createauxbuf
 
@@ -1210,8 +1210,8 @@ endif
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("MSCDEX installed with ")
-	invoke	printbinword,bx
-	invoke	printtolog, CStr("b drives, beginning on ")
+	invoke	printhexword,bx
+	invoke	printtolog, CStr("h drives, beginning on ")
 	invoke	printdriveletter,cl
 	invoke	printtolog, CStr(":",0Dh,0Ah,"checking the version...",0Dh,0Ah)
 endif
@@ -1226,8 +1226,8 @@ endif
 	mov	bx,(size CdRmHeadBuf + 0Fh) SHR 4
 if	?DEBUGLOG
 	invoke	printtolog, CStr("MSCDEX > 2.10 installed, allocating ")
-	invoke	printbinword,bx
-	invoke	printtolog, CStr("b-paragraph buffer to check drives...",0Dh,0Ah)
+	invoke	printhexword,bx
+	invoke	printtolog, CStr("h-paragraph buffer to check drives...",0Dh,0Ah)
 endif
 	mov	ax,100h		; allocate DOS memory block
 	int	31h
@@ -1237,8 +1237,8 @@ if	?DEBUGLOG
 	cmp	ax,8
 	jne	@@skip
 	invoke	printtolog, CStr("Insufficient memory - largest MCB is ")
-	invoke	printbinword,bx
-	invoke	printtolog, CStr("b paragraphs",0Dh,0Ah)
+	invoke	printhexword,bx
+	invoke	printtolog, CStr("h paragraphs",0Dh,0Ah)
 	jmp	@@skip
 @@:
 else
@@ -1337,8 +1337,8 @@ endif
 	  mov	bx,(size CdRmDriveBuf + 0Fh) SHR 4
 if	?DEBUGLOG
 	  invoke printtolog, CStr("Allocating ")
-	  invoke printbinword,bx
-	  invoke printtolog, CStr("b-paragraph drive buffer...",0Dh,0Ah)
+	  invoke printhexword,bx
+	  invoke printtolog, CStr("h-paragraph drive buffer...",0Dh,0Ah)
 endif
 	  int	31h
 if	?DEBUGLOG
@@ -1346,8 +1346,8 @@ if	?DEBUGLOG
 	  cmp	ax,8
 	  jne	@@skip
 	  invoke printtolog, CStr("Insufficient memory for drive buffer - largest MCB is ")
-	  invoke printbinword,bx
-	  invoke printtolog, CStr("b paragraphs",0Dh,0Ah)
+	  invoke printhexword,bx
+	  invoke printtolog, CStr("h paragraphs",0Dh,0Ah)
 	  jmp	@@next
 @@:
 else
@@ -1812,10 +1812,10 @@ unmute		proc near	uses eax edx
 	movzx	edx,ah	; get the "numsteps" (i.e. max) gain value (bits 8-14)
 if	?DEBUGLOG
 	invoke	printtolog,CStr("input amp max gain of codec/node ")
-	invoke	printbinword,[wParam]
-	invoke	printtolog,CStr("b is: ")
-	invoke	printbinword,dx
-	invoke	printtolog,CStr("b",0Dh,0Ah)
+	invoke	printhexword,[wParam]
+	invoke	printtolog,CStr("h is: ")
+	invoke	printhexword,dx
+	invoke	printtolog,CStr("h",0Dh,0Ah)
 endif
 
 	mov	ax,3		; set amplifier
@@ -1829,10 +1829,10 @@ endif
 	movzx	edx,ah	; get the "numsteps" (i.e. max) gain value (bits 8-14)
 if	?DEBUGLOG
 	invoke	printtolog,CStr("output amp max gain of codec/node ")
-	invoke	printbinword,[wParam]
-	invoke	printtolog,CStr("b is: ")
-	invoke	printbinword,dx
-	invoke	printtolog,CStr("b",0Dh,0Ah)
+	invoke	printhexword,[wParam]
+	invoke	printtolog,CStr("h is: ")
+	invoke	printhexword,dx
+	invoke	printtolog,CStr("h",0Dh,0Ah)
 endif
 
 	mov	ax,3		; set amplifier
@@ -1972,8 +1972,8 @@ find_dac_node	proc near	uses ebx ecx edx edi
 	xchg	[esp],eax	; save the node we've found, and pull up our node's type
 if	?DEBUGLOG
 	invoke	printtolog,CStr("unmuting codec/node ")
-	invoke	printbinword,[wParam]
-	invoke	printtolog,CStr("b of type ")
+	invoke	printhexword,[wParam]
+	invoke	printtolog,CStr("h of type ")
 	invoke	printnodetype,al
 	invoke	printtolog,CStr("...",0Dh,0Ah)
 endif
@@ -3008,7 +3008,7 @@ int2f_handler	proc
 	    mov	edx, dword ptr fs:[ebx.AudInfo.Info+4]
 	    mov	dword ptr gs:[CdRmDriveBuf.sInfo.Info],eax
 	    mov	dword ptr gs:[CdRmDriveBuf.sInfo.Info+4],edx
-	  .elseif byte ptr fs:[ebx] == 0		; Eject Disc
+	  .elseif byte ptr fs:[ebx] == 0	; Eject Disc
 	    pop	ebx				; FS:EBX = device request
 	    jmp	@@failifbusy
 

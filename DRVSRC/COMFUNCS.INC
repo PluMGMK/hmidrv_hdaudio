@@ -108,6 +108,54 @@ printbinword	proc near stdcall	uses es edi ecx ebx eax	wOut:word
 	ret
 printbinword	endp
 
+; Print four nibbles to the debug log
+curhexword	db 4 dup (?)
+		db 0
+printhexword	proc near stdcall	uses es edi ecx ebx eax	wOut:word
+	mov	ebx,ds
+	mov	es,ebx
+	pushf
+	cld
+	mov	edi,offset curhexword
+	mov	bx,[wOut]
+
+	mov	al,bh
+	shr	al,4
+	cmp	al,9
+	jbe	@F
+	add	al,'A'-'0'-0Ah
+@@:	add	al,'0'
+	stosb
+
+	mov	al,bh
+	and	al,0Fh
+	cmp	al,9
+	jbe	@F
+	add	al,'A'-'0'-0Ah
+@@:	add	al,'0'
+	stosb
+
+	mov	al,bl
+	shr	al,4
+	cmp	al,9
+	jbe	@F
+	add	al,'A'-'0'-0Ah
+@@:	add	al,'0'
+	stosb
+
+	mov	al,bl
+	and	al,0Fh
+	cmp	al,9
+	jbe	@F
+	add	al,'A'-'0'-0Ah
+@@:	add	al,'0'
+	stosb
+
+	invoke	printtolog, offset curhexword
+	popf
+	ret
+printhexword	endp
+
 printnodetype	proc near stdcall	bNodeType:byte
 	.if	[bNodeType] == WTYPE_AUDIOOUT
 	 invoke	printtolog, CStr("DAC")
@@ -238,11 +286,11 @@ endif
 	jc	@F
 if	?DEBUGLOG
 	invoke	printtolog, CStr("VDS version: ")
-	invoke	printbinword, ax
-	invoke	printtolog, CStr("b",0Dh,0Ah, "Max buf size: ")
-	invoke	printbinword, si
-	invoke	printbinword, di
-	invoke	printtolog, CStr("b",0Dh,0Ah)
+	invoke	printhexword, ax
+	invoke	printtolog, CStr("h",0Dh,0Ah, "Max buf size: ")
+	invoke	printhexword, si
+	invoke	printhexword, di
+	invoke	printtolog, CStr("h",0Dh,0Ah)
 endif
 	mov	bx,si
 	shl	ebx,10h
@@ -314,15 +362,15 @@ endif
 if	?DEBUGLOG
 	   invoke printtolog, CStr("CORB/RIRB physical address == ")
 	   ror	edx,10h
-	   invoke printbinword,dx
+	   invoke printhexword,dx
 	   ror	edx,10h
-	   invoke printbinword,dx
-	   invoke printtolog, CStr("b",0Dh,0Ah,"DPMI handle == ")
+	   invoke printhexword,dx
+	   invoke printtolog, CStr("h",0Dh,0Ah,"DPMI handle == ")
 	   ror	ebx,10h
-	   invoke printbinword,bx
+	   invoke printhexword,bx
 	   ror	ebx,10h
-	   invoke printbinword,bx
-	   invoke printtolog, CStr("b",0Dh,0Ah)
+	   invoke printhexword,bx
+	   invoke printtolog, CStr("h",0Dh,0Ah)
 endif
 	.endif
 
@@ -359,8 +407,8 @@ if	?DEBUGLOG
 	invoke	printtolog, CStr("GCAP == ")
 	invoke	printbinword,es:[edi].HDAREGS.gcap
 	invoke	printtolog, CStr("b",0Dh,0Ah,"Version == ")
-	invoke	printbinword,word ptr es:[edi].HDAREGS.vminor
-	invoke	printtolog, CStr("b",0Dh,0Ah)
+	invoke	printhexword,word ptr es:[edi].HDAREGS.vminor
+	invoke	printtolog, CStr("h",0Dh,0Ah)
 endif
 	clc
 	ret
@@ -425,8 +473,8 @@ endif
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("CORB write pointer == ")
-	invoke	printbinword, es:[edi].HDAREGS.corbwp
-	invoke	printtolog, CStr("b",0Dh,0Ah)
+	invoke	printhexword, es:[edi].HDAREGS.corbwp
+	invoke	printtolog, CStr("h",0Dh,0Ah)
 endif
 	mov	es:[edi].HDAREGS.corbwp,0	; reset CORB write pointer
 	mov	es:[edi].HDAREGS.rirbwp,8000h	; reset RIRB write pointer
@@ -687,8 +735,8 @@ endif
 	mov	ax,es:[DD_Struc.DD_bufid]
 if	?DEBUGLOG
 	invoke	printtolog, CStr("VDS alloc successful, buffer ID = ")
-	invoke	printbinword,ax
-	invoke	printtolog, CStr("b",0Dh,0Ah)
+	invoke	printhexword,ax
+	invoke	printtolog, CStr("h",0Dh,0Ah)
 endif
 	mov	edx,es:[DD_Struc.DD_physaddx]
 	mov	di,word ptr es:DD_Struc.DD_size[0]
@@ -723,22 +771,22 @@ if	?DEBUGLOG
 @@vds_toobig:
 	invoke	printtolog, CStr("buffer size too large for VDS alloc!",0Dh,0Ah)
 	ror	eax,10h
-	invoke	printbinword,ax
+	invoke	printhexword,ax
 	ror	eax,10h
-	invoke	printbinword,ax
-	invoke	printtolog, CStr("b > ")
+	invoke	printhexword,ax
+	invoke	printtolog, CStr("h > ")
 	ror	edx,10h
-	invoke	printbinword,dx
+	invoke	printhexword,dx
 	ror	edx,10h
-	invoke	printbinword,dx
-	invoke	printtolog, CStr("b",0Dh,0Ah)
+	invoke	printhexword,dx
+	invoke	printtolog, CStr("h",0Dh,0Ah)
 	jmp	@@vds_retpoint_fail
 
 @@vdsfail:
 	invoke	printtolog, CStr("VDS allocation failed, errcode = ")
 	cbw
-	invoke	printbinword,ax
-	invoke	printtolog, CStr("b",0Dh,0Ah)
+	invoke	printhexword,ax
+	invoke	printtolog, CStr("h",0Dh,0Ah)
 	jmp	@@vds_retpoint_fail
 
 @@realallocfail:
@@ -1329,12 +1377,12 @@ alloc_phys_sel	proc near
 	; returns selector in AX pointing to the physical address in BX:CX
 if	?DEBUGLOG
 	invoke	printtolog, CStr("alloc_phys_sel: base address == ")
-	invoke	printbinword,bx
-	invoke	printbinword,cx
-	invoke	printtolog, CStr("b",0Dh,0Ah,"alloc_phys_sel: size == ")
-	invoke	printbinword,si
-	invoke	printbinword,di
-	invoke	printtolog, CStr("b",0Dh,0Ah)
+	invoke	printhexword,bx
+	invoke	printhexword,cx
+	invoke	printtolog, CStr("h",0Dh,0Ah,"alloc_phys_sel: size == ")
+	invoke	printhexword,si
+	invoke	printhexword,di
+	invoke	printtolog, CStr("h",0Dh,0Ah)
 endif
 	call	map_physmem
 	jc	@F
@@ -1365,9 +1413,9 @@ endif
 
 if	?DEBUGLOG
 	invoke	printtolog, CStr("free_phys_sel: base address == ")
-	invoke	printbinword,cx
-	invoke	printbinword,dx
-	invoke	printtolog, CStr("b",0Dh,0Ah)
+	invoke	printhexword,cx
+	invoke	printhexword,dx
+	invoke	printtolog, CStr("h",0Dh,0Ah)
 endif
 	xchg	bx,cx
 	xchg	cx,dx			; save the selector in DX
